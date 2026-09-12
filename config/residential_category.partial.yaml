@@ -1,0 +1,5 @@
+- name: residential
+  layer: residential
+  group: water
+  description: Residential areas + water bodies/waterways (flood model context)
+  query: water/residential.ql

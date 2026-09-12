@@ -80,7 +80,7 @@ class OverpassClient:
     # Query rendering
     # ------------------------------------------------------------------ #
 
-    def render_query(self, body: str, comment: str | None = None) -> str:
+    def render_query(self, body: str) -> str:
         """Render a .ql body into a complete Overpass QL document.
 
         The body's statements are wrapped in a union block ``( ... );`` so a
@@ -90,8 +90,6 @@ class OverpassClient:
         bbox = self.study_area.bbox_overpass
         body = body.replace("{{bbox}}", bbox)
         header = f"[out:json][timeout:{self.timeout}][bbox:{bbox}];"
-        if comment:
-            header += f"\n// {comment}"
         indented = "\n".join(
             f"  {line}" if line.strip() else line for line in body.strip().splitlines()
         )
@@ -127,7 +125,7 @@ class OverpassClient:
             raise FileNotFoundError(f"Query file missing: {category.query}")
 
         body = category.query.read_text(encoding="utf-8")
-        rendered = self.render_query(body, comment=category.description)
+        rendered = self.render_query(body)
 
         started = time.monotonic()
         payload, from_cache = self.fetch_query(rendered, cache_key=category.name)

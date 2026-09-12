@@ -55,6 +55,12 @@
   description: Rivers, canals, streams, drains, water bodies
   query: water/waterways.ql
 
+- name: residential
+  layer: residential
+  group: water
+  description: Residential areas + water bodies/waterways (flood model context)
+  query: water/residential.ql
+
 - name: hospitals
   layer: hospitals
   group: health_education
