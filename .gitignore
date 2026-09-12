@@ -1,0 +1,56 @@
+# --- InfraShield .gitignore ---
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data: keep directory structure (via .gitkeep), never the bulk datasets
+data/raw/**
+data/processed/**
+data/cache/**
+data/output/**
+!data/**/
+!data/**/.gitkeep
+
+# Geospatial sidecar / temp files
+*.gpkg-wal
+*.gpkg-shm
+*.qgs~
+*.qgz~
+*.aux.xml
+*.ovr
+*.cpg
+*.dbf
+*.prj
+*.shp.xml
+*.shx
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker compose overrides
+docker-compose.override.yml

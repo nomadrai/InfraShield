@@ -1,0 +1,68 @@
+# InfraShield OSM category registry.
+#
+# Single source of truth for which Overpass queries exist and how the
+# extracted elements are classified downstream. The fetch script iterates
+# over this file; the processing script uses "layer" for GeoPackage layers
+# and "group" for coarse classing in the DB and dependency graph.
+#
+# query paths are relative to config/overpass/.
+
+- name: major_roads
+  layer: roads_major
+  group: roads
+  description: Primary through-traffic network (motorway..tertiary + links)
+  query: roads/major_roads.ql
+
+- name: minor_roads
+  layer: roads_minor
+  group: roads
+  description: Residential / service streets for last-mile access
+  query: roads/minor_roads.ql
+
+- name: bridges
+  layer: bridges
+  group: roads
+  description: Bridge segments and viaducts (single points of failure)
+  query: roads/bridges.ql
+
+- name: railways
+  layer: railways
+  group: transport
+  description: Rail lines, stations, halts, tram/subway infrastructure
+  query: transport/railways.ql
+
+- name: airports
+  layer: airports
+  group: transport
+  description: Runways, taxiways, aerodromes, helipads
+  query: transport/airports.ql
+
+- name: power
+  layer: power
+  group: energy
+  description: Power lines, substations, plants, towers
+  query: energy/power.ql
+
+- name: telecom
+  layer: telecom
+  group: communication
+  description: Communication masts/towers and telecom facilities
+  query: communication/telecom.ql
+
+- name: waterways
+  layer: waterways
+  group: water
+  description: Rivers, canals, streams, drains, water bodies
+  query: water/waterways.ql
+
+- name: hospitals
+  layer: hospitals
+  group: health_education
+  description: Hospitals, clinics and emergency services (fire, police)
+  query: health_education/hospitals.ql
+
+- name: schools
+  layer: schools
+  group: health_education
+  description: Schools, colleges, universities, kindergartens
+  query: health_education/schools.ql

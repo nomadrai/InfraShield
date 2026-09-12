@@ -1,0 +1,5 @@
+# Optional extras for the PostgreSQL + PostGIS pipeline.
+# The core pipeline (fetch/process) works without these.
+SQLAlchemy>=2.0
+GeoAlchemy2>=0.14
+psycopg2-binary>=2.9

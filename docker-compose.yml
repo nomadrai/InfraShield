@@ -1,0 +1,15 @@
+# Local PostGIS for InfraShield. Start with:  docker compose up -d
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: infrashield-postgis
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-infrashield}
+    ports:
+      - "5432:5432"
+    volumes:
+      - infrashield_pgdata:/var/lib/postgresql/data
+volumes:
+  infrashield_pgdata:

@@ -1,0 +1,17 @@
+# InfraShield core requirements (Python 3.10+)
+geopandas>=1.0
+shapely>=2.0
+pyyaml>=6.0
+requests>=2.31
+pandas>=2.0
+
+# Dependency graph
+networkx>=3.0
+
+# PostGIS loading (scripts/load_to_postgis.py, scripts/init_db.py)
+SQLAlchemy>=2.0
+GeoAlchemy2>=0.14
+psycopg2-binary>=2.9
+
+# Testing
+pytest>=8.0

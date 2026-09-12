@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infrashield"
+version = "0.1.0"
+description = "Geospatial decision support for critical infrastructure under environmental stress"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "geopandas>=1.0",
+    "shapely>=2.0",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "pandas>=2.0",
+    "networkx>=3.0",
+]
+
+[project.optional-dependencies]
+db = ["SQLAlchemy>=2.0", "GeoAlchemy2>=0.14", "psycopg2-binary>=2.9"]
+dev = ["pytest>=8.0", "mypy>=1.8", "ruff>=0.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
