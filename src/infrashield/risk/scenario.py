@@ -93,7 +93,36 @@ def _landcover_masks(all_layers: dict, terrain: TerrainData) -> dict[str, np.nda
 
     import numpy as np
     import pandas as pd
+    from affine import Affine
     from rasterio.features import rasterize
+
+    affine = Affine(*terrain.transform[:6])
+
+    def _parse(raw):
+        if isinstance(raw, str) and raw:
+            try:
+                return _json.loads(raw)
+            except _json.JSONDecodeError:
+                return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _rows_with(gdf, key: str, values: set[str]):
+        if gdf is None or gdf.empty:
+            return gdf.iloc[0:0]
+        keep = gdf["tags"].map(
+            lambda raw: _parse(raw).get(key) in values
+        )
+        return gdf[keep]
+
+    def _rasterise(gdf) -> np.ndarray:
+        geoms = [g for g in gdf.geometry if g is not None and not g.is_empty]
+        if not geoms:
+            return np.zeros((terrain.height, terrain.width), dtype=bool)
+        return rasterize(
+            ((g, 1) for g in geoms),
+            out_shape=(terrain.height, terrain.width), transform=affine,
+            fill=0, all_touched=True, dtype="uint8",
+        ).astype(bool)
 
     def _tagged(gdf, keys: set[str]):
         out = []
@@ -115,33 +144,14 @@ def _landcover_masks(all_layers: dict, terrain: TerrainData) -> dict[str, np.nda
     ww = all_layers.get("waterways")
 
     if res is not None and not res.empty:
-        built_vals = set(_tagged(res, {"landuse"}))
-        built_types = built_vals & {"residential", "industrial", "commercial", "retail"}
-        if built_types:
-            sel = res[res["tags"].str.contains(
-                "|".join(sorted(f'"landuse": "{t}"' for t in built_types)), na=False
-            )]
-            if not sel.empty:
-                masks["builtup"] = rasterize(
-                    ((g, 1) for g in sel.geometry if g is not None and not g.is_empty),
-                    out_shape=shape, transform=terrain.transform,
-                    fill=0, all_touched=True, dtype="uint8",
-                ).astype(bool)
-        water_types = {"water"} & set(_tagged(res, {"natural"}))
-        if water_types:
-            sel = res[res["tags"].str.contains('"natural": "water"', na=False)]
-            if not sel.empty:
-                masks["water"] = rasterize(
-                    ((g, 1) for g in sel.geometry if g is not None and not g.is_empty),
-                    out_shape=shape, transform=terrain.transform,
-                    fill=0, all_touched=True, dtype="uint8",
-                ).astype(bool)
+        sel = _rows_with(res, "landuse", {"residential", "industrial", "commercial", "retail"})
+        if not sel.empty:
+            masks["builtup"] = _rasterise(sel)
+        sel = _rows_with(res, "natural", {"water"})
+        if not sel.empty:
+            masks["water"] = _rasterise(sel)
     if masks["water"] is None and ww is not None and not ww.empty:
-        masks["water"] = rasterize(
-            ((g, 1) for g in ww.geometry if g is not None and not g.is_empty),
-            out_shape=shape, transform=terrain.transform,
-            fill=0, all_touched=True, dtype="uint8",
-        ).astype(bool)
+        masks["water"] = _rasterise(ww)
     return masks
 
 

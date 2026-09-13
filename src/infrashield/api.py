@@ -22,13 +22,15 @@ import base64
 import logging
 import time
 import uuid
+from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from infrashield.config import STUDY_AREA
+from infrashield.config import load_study_area
 from infrashield.risk.scenario import run_scenario
 from infrashield.store import (
     list_simulations,
@@ -104,6 +106,29 @@ class SimulateRequest(BaseModel):
     params: dict = Field(default_factory=dict)
 
 
+def _cascade_edges(dep_graph, assets: list[dict]) -> list[dict]:
+    """Dependency edges among *affected* assets, for chain visualisation.
+
+    An edge qualifies when either endpoint is materially affected (exposed,
+    failed, or carrying cascade impact) - the raw graph has ~5k edges across
+    12k nodes, far too noisy to draw wholesale.
+    """
+    affected = {
+        a["asset_id"] for a in assets
+        if a["exposure"] > 0.05 or a["risk"] > 0.1 or a["cascade_impact"] > 0
+    }
+    out = []
+    for u, v, data in dep_graph.edges(data=True):
+        if u in affected or v in affected:
+            out.append({
+                "source": u, "target": v,
+                "dep_type": data.get("dep_type", ""),
+                "weight": round(float(data.get("weight", 1.0)), 3),
+            })
+    out.sort(key=lambda e: -e["weight"])
+    return out[:4000]
+
+
 def _grid_png(grid: np.ndarray) -> str | None:
     """Encode a float grid as a base64 16-bit greyscale PNG for the map.
 
@@ -152,10 +177,11 @@ def meta() -> dict:
     state = _get_state()
     t = state["terrain"]
     dem = t.dem[np.isfinite(t.dem)]
+    area = load_study_area()
     return {
         "study_area": {
-            "name": STUDY_AREA.get("name", "Mumbai AOI"),
-            "bbox": _bbox(state["layers"]),
+            "name": "Mumbai AOI",
+            "bbox": [area.west, area.south, area.east, area.north],
             "dem_bbox": [t.transform[2], t.transform[5] + t.height * t.transform[4],
                          t.transform[2] + t.width * t.transform[0], t.transform[5]],
             "grid": {"height": t.height, "width": t.width,
@@ -259,6 +285,7 @@ def simulate(req: SimulateRequest) -> dict:
         "stage_labels": result.stage_labels,
         "summary": result.summary,
         "assets": assets,
+        "cascade_edges": _cascade_edges(state["dep_graph"], assets),
     }
 
 
@@ -275,6 +302,47 @@ def simulation_detail(sim_id: str) -> dict:
     return payload
 
 
+@app.get("/api/dependencies/{asset_id:path}")
+def dependencies(asset_id: str) -> dict:
+    """Direct upstream dependencies + downstream dependents of one asset."""
+    state = _get_state()
+    g = state["dep_graph"]
+    if asset_id not in g:
+        raise HTTPException(404, f"asset {asset_id!r} not in dependency graph")
+    layers_by_id = {}
+    for gdf in state["layers"].values():
+        if gdf.empty or "osm_type" not in gdf.columns:
+            continue
+        for _, row in gdf.iterrows():
+            layers_by_id[f"{row['osm_type']}/{row['osm_id']}"] = row.get("name")
+
+    def node(nid: str) -> dict:
+        d = g.nodes[nid]
+        return {"id": nid, "group": d.get("group", ""),
+                "name": d.get("name") or layers_by_id.get(nid)}
+
+    return {
+        "asset": node(asset_id),
+        "depends_on": [
+            {**node(v), "dep_type": d.get("dep_type", ""),
+             "weight": round(float(d.get("weight", 1.0)), 3)}
+            for _, v, d in g.out_edges(asset_id, data=True)
+        ],
+        "dependents": [
+            {**node(u), "dep_type": d.get("dep_type", ""),
+             "weight": round(float(d.get("weight", 1.0)), 3)}
+            for u, _, d in g.in_edges(asset_id, data=True)
+        ],
+    }
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True}
+
+
+# Dashboard static files (imported Leaflet, no CDN dependency). Mounted last
+# so /api/* routes take precedence.
+_WEB_DIR = Path(__file__).resolve().parents[2] / "web"
+if _WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
