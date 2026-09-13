@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>InfraShield — Infrastructure Risk &amp; Disaster Simulation</title>
 <link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="vendor/MarkerCluster.css">
+<link rel="stylesheet" href="vendor/MarkerCluster.Default.css">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -40,12 +42,12 @@
           <div class="segmented" id="hazard-picker" role="tablist"></div>
         </div>
         <div class="field" id="severity-field">
-          <label>Severity <output id="severity-out"></output></label>
+          <label><span id="severity-label">Severity</span> <output id="severity-out"></output></label>
           <input type="range" id="severity" />
           <div class="range-note" id="severity-note"></div>
         </div>
         <div class="field hidden" id="secondary-field">
-          <label id="secondary-label"></label>
+          <label><span id="secondary-label"></span> <output id="secondary-out"></output></label>
           <input type="range" id="secondary" />
           <div class="range-note" id="secondary-note"></div>
         </div>
@@ -87,6 +89,11 @@
         <button class="badge active" data-layer="hazard" id="badge-hazard">Hazard</button>
         <button class="badge" data-layer="cascade" id="badge-cascade">Cascades</button>
       </div>
+      <div id="basemap-switch" class="basemap-switch">
+        <button class="badge basemap-btn active" data-basemap="satellite">Satellite</button>
+        <button class="badge basemap-btn" data-basemap="osm">OSM</button>
+        <button class="badge basemap-btn" data-basemap="dark">Dark</button>
+      </div>
     </main>
   </div>
 
@@ -102,7 +109,8 @@
   <div id="toast" class="toast hidden"></div>
 </div>
 
-<script src="vendor/leaflet.js"></script>
-<script src="js/app.js"></script>
+<script src="vendor/leaflet.js?v=2"></script>
+<script src="vendor/leaflet.markercluster.js?v=2"></script>
+<script src="js/app.js?v=3"></script>
 </body>
 </html>

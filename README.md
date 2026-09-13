@@ -78,10 +78,17 @@ the pipeline, and every documented simplification.
 # one-time: fetch the real Copernicus GLO-30 DEM for the AOI
 python scripts/fetch_dem.py
 
+# optional: CARTO basemap key (removes the "API key required" watermark)
+cp .env.example .env       # then set CARTO_BASEMAP_KEY=... from carto.com/basemap/apikey
+
 # start the API + dashboard (serves web/ at /)
 uvicorn infrashield.api:app --app-dir src
 # open http://127.0.0.1:8000
 ```
+
+Without a basemap key the dashboard falls back to OpenFreeMap (free, no watermark).
+Quota-wise, one map view loads ~28 tiles and a heavy interactive session ~1–2k, so
+the free tier (5M tiles/month) comfortably covers hundreds of sessions.
 
 The dashboard lets you pick hazard (flood / extreme heat / cyclone), severity and —
 for cyclones — the landfall point on the map, then replays the actual simulated

@@ -137,6 +137,7 @@ def get_settings() -> dict[str, str]:
         "PGDATABASE": "infrashield",
         "PGUSER": "postgres",
         "PGPASSWORD": "",
+        "CARTO_BASEMAP_KEY": "",
     }
     defaults.update(values)
     return defaults

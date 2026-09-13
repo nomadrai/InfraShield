@@ -11,6 +11,9 @@ const S = {
   coordIndex: {},      // asset_id -> [lat, lon]
   sim: null,           // last simulation payload
   assetState: new Map(), // asset_id -> assessment dict
+  pointClusters: {},   // group -> L.markerClusterGroup
+  pointZoomBound: {},  // group -> min zoom for visibility
+  plainGeoms: {},      // group -> raw GeoJSON (icons rebuilt on zoom)
   stageIdx: 0,
   playing: false,
   playTimer: null,
@@ -37,10 +40,130 @@ const fmt = {
 const map = L.map("map", { zoomControl: true, preferCanvas: false })
   .setView([19.13, 72.91], 13);
 
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
-  subdomains: "abcd", maxZoom: 19,
-}).addTo(map);
+// Basemap: CARTO dark tiles when a CARTO_BASEMAP_KEY is configured in .env
+// (surfaced by /api/meta as meta.basemap.api_key); otherwise fall back to
+// OpenFreeMap's dark style (free, no key, no watermark).
+// Basemaps: Esri World Imagery (satellite, free, no key) is the default.
+// OSM Standard and CARTO dark (key via .env, injected by the server) are
+// one click away in the basemap switcher. All raster tile endpoints.
+const BASEMAPS = {
+  satellite: {
+    label: "Satellite",
+    layer: () => L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { attribution: "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics", maxZoom: 19 }),
+  },
+  osm: {
+    label: "OSM Standard",
+    layer: () => L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      maxZoom: 19 }),
+  },
+  dark: {
+    label: "Dark",
+    layer: () => {
+      const key = (window.__basemapKey || "").trim();
+      const url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        + (key ? "?key=" + encodeURIComponent(key) : "");
+      return L.tileLayer(url, {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        subdomains: "abcd", maxZoom: 20 });
+    },
+  },
+};
+let basemapName = "satellite";
+let basemapLayer = null;
+
+function setBasemap(name) {
+  const spec = BASEMAPS[name];
+  if (!spec) return;
+  if (basemapLayer) map.removeLayer(basemapLayer);
+  basemapLayer = spec.layer().addTo(map);
+  basemapLayer.bringToBack();
+  basemapName = name;
+  for (const b of document.querySelectorAll(".basemap-btn"))
+    b.classList.toggle("active", b.dataset.basemap === name);
+}
+
+map.on("zoomend", applyZoomGating);
+setBasemap("satellite");
+
+/* ------------------------------------------------------------------ */
+/* cartographic point symbols (one distinct shape+color per category)   */
+/* ------------------------------------------------------------------ */
+/* SVG paths drawn on a 24x24 viewBox; each kind has a unique silhouette
+   AND hue so categories never collapse visually, even in grayscale.   */
+const SYMBOLS = {
+  hospital:    { label: "Hospital", color: "#dc2626", ring: "#fecaca", shape: '<path d="M12 4h2v6h6v2h-6v6h-2v-6H6v-2h6z" fill="#dc2626"/>' },   // red cross
+  clinic:      { label: "Clinic / doctor", color: "#f87171", ring: "#fee2e2", shape: '<path d="M12 5h1.6v5.4H19V12h-5.4v5.4H12V12H6.6v-1.6H12z" fill="#f87171"/>' }, // small red cross
+  fire:        { label: "Fire station", color: "#ea580c", ring: "#ffedd5", shape: '<path d="M12 3c2 3-1 4.5 1.5 6.5C15.6 11.2 17 9.6 16 7c3 2 4 5.2 4 7.4A8 8 0 0 1 4 14.5C4 10 8 8 9 5c.6 1.6 2 2.4 3-2zM12 19a3.2 3.2 0 0 0 3.2-3.2c0-1.7-1.6-2.9-3.2-4.6-1.6 1.7-3.2 2.9-3.2 4.6A3.2 3.2 0 0 0 12 19z" fill="#ea580c"/>' }, // flame
+  police:      { label: "Police", color: "#2563eb", ring: "#dbeafe", shape: '<path d="M12 3l7 2.4v5.2c0 4.6-3 8-7 10.4-4-2.4-7-5.8-7-10.4V5.4L12 3zm-1.6 12.2l6-6-1.4-1.4-4.6 4.6-2-2-1.4 1.4 3.4 3.4z" fill="#2563eb"/>' }, // shield
+  school:      { label: "School", color: "#d97706", ring: "#fef3c7", shape: '<path d="M12 4L2 9l10 5 8-4v5h2V9L12 4zm-6 8.6V16c0 1.7 2.7 3 6 3s6-1.3 6-3v-3.4l-6 3-6-3z" fill="#d97706"/>' }, // graduation cap
+  substation:  { label: "Substation / power", color: "#eab308", ring: "#fef08a", shape: '<path d="M13 2L5 13h5l-1.5 9L19 10h-5.5L13 2z" fill="#eab308" stroke="#422006" stroke-width="1.2"/>' }, // lightning bolt
+  pylon:       { label: "Transmission tower", color: "#a16207", ring: "#fef9c3", shape: '<path d="M9 3h6l-1 4h2v2h-2.6L15 13h2v2h-2.7L16 21h-2.2l-1-4h-3.6l-1 4H6l1.7-6H5v-2h2l1.6-4H6V5h2L9 3zm1.4 4L9.6 11h4.8l-.8-4h-3.2z" fill="#a16207"/>' }, // lattice tower
+  station:     { label: "Rail station", color: "#334155", ring: "#e2e8f0", shape: '<path d="M12 3a5 5 0 0 1 5 5v6a5 5 0 0 1-2.5 4.3L16 21h-2.4l-1.2-2h-1l-1.2 2H8l1.5-2.7A5 5 0 0 1 7 14V8a5 5 0 0 1 5-5zm-3 5v4h6V8H9zm3 8.4a1.4 1.4 0 1 0 0 2.8 1.4 1.4 0 0 0 0-2.8z" fill="#334155"/>' }, // train front
+  mast:        { label: "Telecom mast", color: "#0891b2", ring: "#cffafe", shape: '<path d="M11 8h2v13h-2V8zm1-5l3 4h-6l3-4zM6 9c0 3 1.4 4.4 3 5v2c-2.8-.7-5-3-5-7h2zm12 0h2c0 4-2.2 6.3-5 7v-2c1.6-.6 3-2 3-5z" fill="#0891b2"/>' }, // mast with waves
+  airport:     { label: "Airport / airfield", color: "#7c3aed", ring: "#ede9fe", shape: '<path d="M21 15l-8-4V4.5a1.5 1.5 0 0 0-3 0V11l-8 4v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-4.5l8 2.5v-2z" fill="#7c3aed"/>' }, // plane
+  bridge_pt:   { label: "Bridge", color: "#475569", ring: "#e2e8f0", shape: '<path d="M3 13h2v3H3v-3zm16 0h2v3h-2v-3zM2 12c4-5 16-5 20 0h-3c-3.5-3.4-10.5-3.4-14 0H2z" fill="#475569"/>' }, // arch span
+};
+
+/* map (layer group, OSM tag) -> symbol kind */
+function pointKind(group, tags) {
+  const amenity = tags.amenity, power = tags.power, manMade = tags.man_made,
+        railway = tags.railway, aeroway = tags.aeroway;
+  if (group === "hospitals") {
+    if (amenity === "hospital") return "hospital";
+    if (amenity === "fire_station") return "fire";
+    if (amenity === "police") return "police";
+    if (amenity === "clinic" || amenity === "doctors" || amenity === "dentist") return "clinic";
+    return "clinic";
+  }
+  if (group === "schools") {
+    if (amenity === "school" || amenity === "kindergarten" || amenity === "college"
+        || amenity === "university" || amenity === "institute") return "school";
+    return "school";
+  }
+  if (group === "power") {
+    if (power === "tower") return "pylon";
+    if (power === "substation" || power === "plant" || power === "generator"
+        || manMade === "mast" || power === "line" || power === "minor_line") return "substation";
+    return "substation";
+  }
+  if (group === "railways") return "station";
+  if (group === "telecom") return "mast";
+  if (group === "airports") return "airport";
+  if (group === "bridges") return "bridge_pt";
+  return null; // not a point category (roads stay lines)
+}
+
+/* zoom policy: individual icons + clusters appear past these zooms.
+   Below the threshold the layer is hidden entirely (region-wide view);
+   clusters (count bubbles) show from minZoom; individual icons from
+   ICON_ZOOM (dense pylons need a higher threshold than hospitals). */
+const POINT_CFG = {
+  hospitals: { minZoom: 12 },
+  schools:   { minZoom: 12 },
+  power:     { minZoom: 14 },   // 315 pylons: keep out until neighbourhood view
+  railways:  { minZoom: 12 },
+  telecom:   { minZoom: 12 },
+  airports:  { minZoom: 12 },
+  bridges:   { minZoom: 13 },
+};
+const ICON_ZOOM = 15;           // >= this: individual icons (clusters before)
+
+function makeIcon(kind, stateKey) {
+  const sym = SYMBOLS[kind] || SYMBOLS.clinic;
+  const ring = stateKey === "failed" ? "#ef4444"
+    : stateKey === "exposed" ? "#f59e0b"
+    : stateKey === "cascade" ? "#fb923c" : sym.ring;
+  const cls = "infra-marker" + (stateKey ? " st-" + stateKey : "");
+  return L.divIcon({
+    className: cls,
+    html: `<span class="marker-ring" style="border-color:${ring}"></span>` +
+          `<svg viewBox="0 0 24 24" width="19" height="19">${sym.shape}</svg>`,
+    iconSize: [23, 23], iconAnchor: [11, 11],
+  });
+}
 
 /* group draw order: roads first, facilities on top */
 const GROUP_ORDER = ["roads_minor", "roads_major", "railways", "power", "telecom",
@@ -64,49 +187,113 @@ function baseStyle(group) {
 /* ------------------------------------------------------------------ */
 /* bootstrap                                                           */
 /* ------------------------------------------------------------------ */
+/* null-safe DOM helpers: a missing element must never kill the app */
+function setText(sel, text) {
+  const el = typeof sel === "string" ? $(sel) : sel;
+  if (el) el.textContent = text;
+}
+function setHTML(sel, html) {
+  const el = typeof sel === "string" ? $(sel) : sel;
+  if (el) el.innerHTML = html;
+}
+
 async function boot() {
   try {
     const [meta, layers] = await Promise.all([
-      fetch("/api/meta").then((r) => r.json()),
-      fetch("/api/layers").then((r) => r.json()),
+      fetch("/api/meta").then((r) => {
+        if (!r.ok) throw new Error(`/api/meta ${r.status}`);
+        return r.json();
+      }),
+      fetch("/api/layers").then((r) => {
+        if (!r.ok) throw new Error(`/api/layers ${r.status}`);
+        return r.json();
+      }),
     ]);
     S.meta = meta;
     S.layers = layers;
 
-    $("#study-name").textContent = `${meta.study_area.name} · DEM ${meta.study_area.elevation_range_m[0]}–${meta.study_area.elevation_range_m[1]} m · ${meta.study_area.grid.cell_size_m} m grid`;
-    const counts = Object.entries(meta.counts).map(([k, v]) => `<b>${fmt.int(v)}</b> ${k.replace("_", " ")}`).join(" · ");
-    $("#header-meta").innerHTML = counts;
+    setText("#study-name", `${meta.study_area.name} · DEM ${meta.study_area.elevation_range_m[0]}–${meta.study_area.elevation_range_m[1]} m · ${meta.study_area.grid.cell_size_m} m grid`);
+    const counts = Object.entries(meta.counts || {}).map(([k, v]) => `<b>${fmt.int(v)}</b> ${k.replace("_", " ")}`).join(" · ");
+    setHTML("#header-meta", counts);
 
     buildAssetLayers();
     buildHazardPicker();
   } catch (err) {
+    console.error("boot failed:", err);
     toast(`Failed to load backend data: ${err.message}`);
     setStatus("error", "Backend unreachable");
   }
 }
 
+function featureId(f) {
+  return f.id ?? (f.properties?.osm_type + "/" + f.properties?.osm_id);
+}
+
+function safeTags(raw) {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw;
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+
+function rememberCoords(f) {
+  const c = f.geometry?.coordinates;
+  if (!c) return;
+  const pt = Array.isArray(c[0]) ? c[Math.floor(c.length / 2)] : c;
+  S.coordIndex[featureId(f)] = Array.isArray(pt[0]) ? [pt[0][1], pt[0][0]] : [pt[1], pt[0]];
+}
+
 function buildAssetLayers() {
   for (const [group, gj] of Object.entries(S.layers)) {
     if (!GROUP_STYLE[group]) continue;
-    const layer = L.geoJSON(gj, {
-      style: () => styleFor(group, null),
-      pointToLayer: (feature, latlng) => L.circleMarker(latlng, styleFor(group, null)),
-      onEachFeature: (feature, lyr) => {
-        lyr.on("click", () => selectAsset(feature.id ?? feature.properties.osm_type + "/" + feature.properties.osm_id, lyr));
-        lyr.on("mouseover", () => lyr.setStyle({ weight: (GROUP_STYLE[group]?.weight || 1.5) + 1.5, opacity: 1 }));
-        lyr.on("mouseout", () => lyr.setStyle(styleFor(group, S.assetState.get(feature.id))));
-        // remember coordinates for cascade lines / flyTo
-        const c = feature.geometry?.coordinates;
-        if (c) {
-          const pt = Array.isArray(c[0]) ? c[Math.floor(c.length / 2)] : c;
-          S.coordIndex[feature.id] = Array.isArray(pt[0]) ? [pt[0][1], pt[0][0]] : [pt[1], pt[0]];
-        }
-      },
-    });
-    S.assetLayers[group] = layer;
+    S.plainGeoms[group] = gj;
+
+    if (group in POINT_CFG) {
+      // ---- point categories: clustered divIcon markers ----
+      const markers = [];
+      for (const f of gj.features) {
+        if (f.geometry?.type !== "Point") continue;
+        const kind = pointKind(group, safeTags(f.properties?.tags));
+        if (!kind) continue;
+        const id = featureId(f);
+        const [lon, lat] = f.geometry.coordinates;
+        const mk = L.marker([lat, lon], { icon: makeIcon(kind, null), title: f.properties?.name || id });
+        mk.__assetId = id; mk.__kind = kind;
+        mk.on("click", () => selectAsset(id, mk));
+        markers.push(mk);
+        rememberCoords(f);
+      }
+      const cluster = L.markerClusterGroup({
+        maxClusterRadius: 44,
+        showCoverageOnHover: false,
+        spiderfyDistanceMultiplier: 1.6,
+        iconCreateFunction: (c) => L.divIcon({
+          html: `<span class="cluster-bubble">${c.getChildCount()}</span>`,
+          className: "infra-cluster", iconSize: [34, 34],
+        }),
+      });
+      cluster.addLayers(markers);
+      S.pointClusters[group] = cluster;
+      S.pointZoomBound[group] = POINT_CFG[group].minZoom;
+    } else {
+      // ---- line/area categories: geoJSON layer as before ----
+      const layer = L.geoJSON(gj, {
+        style: () => styleFor(group, null),
+        onEachFeature: (feature, lyr) => {
+          lyr.on("click", () => selectAsset(feature.id ?? feature.properties.osm_type + "/" + feature.properties.osm_id, lyr));
+          lyr.on("mouseover", () => lyr.setStyle({ weight: (GROUP_STYLE[group]?.weight || 1.5) + 1.5, opacity: 1 }));
+          lyr.on("mouseout", () => lyr.setStyle(styleFor(group, S.assetState.get(feature.id))));
+          rememberCoords(feature);
+        },
+      });
+      S.assetLayers[group] = layer;
+    }
   }
   // add in draw order
-  for (const g of GROUP_ORDER) if (S.assetLayers[g]) S.assetLayers[g].addTo(map);
+  for (const g of GROUP_ORDER) {
+    if (S.pointClusters[g]) map.addLayer(S.pointClusters[g]);
+    else if (S.assetLayers[g]) S.assetLayers[g].addTo(map);
+  }
+  applyZoomGating();
 }
 
 /* ------------------------------------------------------------------ */
@@ -114,6 +301,55 @@ function buildAssetLayers() {
 /* ------------------------------------------------------------------ */
 const RISK_COLOR = (r) =>
   r >= 0.6 ? "#ef4444" : r >= 0.4 ? "#f97316" : r >= 0.2 ? "#fbbf24" : "#fde68a";
+
+function markerState(a) {
+  if (!a) return null;
+  if (a.failed === true) return "failed";
+  if (a.exposure > 0.4) return "exposed";
+  if (a.risk >= 0.15 || a.cascade_impact > 0) return "cascade";
+  return null;
+}
+
+function stateRing(state) {
+  return state === "failed" ? "#ef4444"
+    : state === "exposed" ? "#f59e0b"
+    : state === "cascade" ? "#fb923c" : null;
+}
+
+/* re-icon markers to reflect simulation state (ring color) */
+function refreshMarkerIcons() {
+  for (const cluster of Object.values(S.pointClusters)) {
+    cluster.eachLayer((mk) => {
+      if (!mk.__assetId) return;
+      const st = markerState(S.assetState.get(mk.__assetId));
+      if (mk.__state !== st) {
+        mk.setIcon(makeIcon(mk.__kind, st));
+        mk.__state = st;
+      }
+    });
+  }
+}
+
+/* zoom gating: point layers visible only at/above their minZoom */
+function applyZoomGating() {
+  const z = map.getZoom();
+  for (const [group, cluster] of Object.entries(S.pointClusters)) {
+    const min = S.pointZoomBound[group] ?? 12;
+    const visible = z >= min;
+    const currently = map.hasLayer(cluster);
+    if (visible && !currently) map.addLayer(cluster);
+    else if (!visible && currently) map.removeLayer(cluster);
+  }
+  renderLegend();
+}
+
+function markerStateForStage(a, stageIdx) {
+  if (!a || stageIdx === null || stageIdx === undefined || !a.stage_exposure?.length) return markerState(a);
+  const se = a.stage_exposure[Math.min(stageIdx, a.stage_exposure.length - 1)] ?? 0;
+  if (se >= 0.55) return "failed";
+  if (se >= 0.05) return "exposed";
+  return null;
+}
 
 function styleFor(group, a) {
   // no simulation yet (or unaffected asset): dim base style
@@ -155,6 +391,22 @@ function refreshStyles(stageIdx = null) {
       lyr.setStyle(styleFor(group, a));
     });
   }
+  // point markers follow the same stage logic via ring color
+  if (stageIdx !== null) {
+    for (const cluster of Object.values(S.pointClusters)) {
+      cluster.eachLayer((mk) => {
+        if (!mk.__assetId) return;
+        const a = S.assetState.get(mk.__assetId);
+        const st = markerStateForStage(a, stageIdx);
+        if (mk.__state !== st) {
+          mk.setIcon(makeIcon(mk.__kind, st));
+          mk.__state = st;
+        }
+      });
+    }
+  } else {
+    refreshMarkerIcons();
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -187,7 +439,7 @@ function selectHazard(key) {
   const [pKey, pSpec] = params[0];
   const slider = $("#severity");
   slider.min = pSpec.min; slider.max = pSpec.max; slider.step = pSpec.step; slider.value = pSpec.default;
-  $("#severity-field").querySelector("label").childNodes[0].textContent = `${pSpec.label} `;
+  setText("#severity-label", pSpec.label);
   updateSeverityLabels();
 
   const sField = $("#secondary-field");
@@ -201,9 +453,9 @@ function selectHazard(key) {
     sField.classList.add("hidden");
   }
   if (key === "cyclone") {
-    $("#secondary-note").textContent = "Tip: click the map to move the landfall point (default offshore).";
+    setText("#secondary-note", "Tip: click the map to move the landfall point (default offshore).");
   } else {
-    $("#secondary-note").textContent = "";
+    setText("#secondary-note", "");
   }
 }
 
@@ -223,13 +475,11 @@ function currentParams() {
 
 function updateSeverityLabels() {
   const [key] = hazardSpec();
-  const params = S.meta.hazards[key].params;
+  const params = S.meta?.hazards[key]?.params;
+  if (!params) return;
   const keys = Object.keys(params);
-  $("#severity-out").textContent = $("#severity").value + (keys[0] === "rainfall_mm" ? " mm" : keys[0] === "anomaly_c" ? " °C" : "");
-  if (keys[1]) {
-    $("#secondary").parentElement.querySelector("label").childNodes[0].textContent = `${params[keys[1]].label} `;
-    $("#secondary-out")?.remove();
-  }
+  setText("#severity-out", $("#severity").value + (keys[0] === "rainfall_mm" ? " mm" : keys[0] === "anomaly_c" ? " °C" : ""));
+  if (keys[1]) setText("#secondary-out", $("#secondary").value);
 }
 
 $("#severity").addEventListener("input", updateSeverityLabels);
@@ -475,6 +725,10 @@ function coordFromAssets(id) {
   return a ? [a.lat, a.lon] : null;
 }
 
+for (const btn of document.querySelectorAll(".basemap-btn")) {
+  btn.onclick = () => setBasemap(btn.dataset.basemap);
+}
+
 $("#badge-hazard").onclick = () => {
   if (!S.hazardOverlay) return;
   const on = map.hasLayer(S.hazardOverlay);
@@ -550,18 +804,51 @@ function renderRanking(sim) {
 
 function renderLegend() {
   const el = $("#map-legend");
+  if (!el) return;
   const sim = S.sim;
-  if (!sim) { el.classList.add("hidden"); return; }
-  const stage = sim.stages[Math.min(S.stageIdx, sim.stages.length - 1)];
-  const grad = {
-    flood: "linear-gradient(90deg,#122d4a,#1e5a96,#22a0dc,#ecdff5)",
-    heat: "linear-gradient(90deg,#78350f,#d97706,#ea580c,#dc2626,#fef07a)",
-    cyclone: "linear-gradient(90deg,#3b0764,#7c3aed,#db2777,#fde047)",
-  }[sim.hazard_type];
-  const unit = { flood: "water depth", heat: "heat index", cyclone: "wind / surge" }[sim.hazard_type];
-  el.innerHTML = `<h3>${sim.hazard_type} — ${unit}</h3>
-    <div class="row"><span class="swatch" style="background:${grad}"></span><span>0 → ${stage?.meta?.max ?? 1}</span></div>
-    <div class="row" style="color:var(--muted)">red outline = failed · yellow = exposed</div>`;
+  const z = map.getZoom();
+  const activePoints = Object.entries(S.pointZoomBound)
+    .filter(([, min]) => z >= min)
+    .map(([g]) => g);
+
+  let html = "";
+
+  // symbol legend: shown whenever any point layer is (or would be) visible
+  if (activePoints.length) {
+    const kindsShown = new Set();
+    for (const g of activePoints) {
+      for (const f of S.plainGeoms[g]?.features || []) {
+        if (f.geometry?.type !== "Point") continue;
+        const k = pointKind(g, safeTags(f.properties?.tags));
+        if (k) kindsShown.add(k);
+      }
+    }
+    if (kindsShown.size) {
+      html += `<h3>Infrastructure</h3>`;
+      for (const k of [...kindsShown].sort()) {
+        const s = SYMBOLS[k];
+        html += `<div class="row"><svg viewBox="0 0 24 24" width="16" height="16">${s.shape}</svg><span>${s.label}</span></div>`;
+      }
+      html += `<div class="row" style="color:var(--muted)"><span class="cluster-swatch"></span><span>count = clustered markers</span></div>`;
+    }
+  }
+
+  // hazard legend (after a run)
+  if (sim) {
+    const stage = sim.stages[Math.min(S.stageIdx, sim.stages.length - 1)];
+    const grad = {
+      flood: "linear-gradient(90deg,#122d4a,#1e5a96,#22a0dc,#ecdff5)",
+      heat: "linear-gradient(90deg,#78350f,#d97706,#ea580c,#dc2626,#fef07a)",
+      cyclone: "linear-gradient(90deg,#3b0764,#7c3aed,#db2777,#fde047)",
+    }[sim.hazard_type];
+    const unit = { flood: "water depth", heat: "heat index", cyclone: "wind / surge" }[sim.hazard_type];
+    html += `<h3>${sim.hazard_type} — ${unit}</h3>
+      <div class="row"><span class="swatch" style="background:${grad}"></span><span>0 → ${stage?.meta?.max ?? 1}</span></div>
+      <div class="row" style="color:var(--muted)">ring: red = failed · amber = exposed · orange = cascade</div>`;
+  }
+
+  if (!html) { el.innerHTML = ""; el.classList.add("hidden"); return; }
+  el.innerHTML = html;
   el.classList.remove("hidden");
 }
 
@@ -572,7 +859,29 @@ function focusAsset(assetId) {
   const a = S.assetState.get(assetId);
   const coord = S.coordIndex[assetId] || (a ? [a.lat, a.lon] : null);
   openInspector(assetId);
-  if (coord) map.flyTo(coord, Math.max(map.getZoom(), 15), { duration: 0.6 });
+  if (!coord) return;
+  const targetZoom = Math.max(map.getZoom(), 16);
+  map.flyTo(coord, targetZoom, { duration: 0.6 });
+  // when the point layer is zoom-gated, ensure it is present after the fly
+  const zl = targetZoom;
+  for (const [group, cluster] of Object.entries(S.pointClusters)) {
+    const min = S.pointZoomBound[group] ?? 12;
+    const belongs = S.plainGeoms[group]?.features?.some((f) => featureId(f) === assetId
+      && f.geometry?.type === "Point");
+    if (belongs && zl >= min && !map.hasLayer(cluster)) {
+      map.addLayer(cluster);
+      S.pointZoomBound[group] = min; // gating re-applies on zoomend anyway
+    }
+  }
+  // once clustered markers exist, spiderfy the cluster containing the asset
+  setTimeout(() => {
+    for (const cluster of Object.values(S.pointClusters)) {
+      if (!map.hasLayer(cluster)) continue;
+      let target = null;
+      cluster.eachLayer((mk) => { if (mk.__assetId === assetId) target = mk; });
+      if (target) cluster.zoomToShowLayer(target, () => target.fire("click"));
+    }
+  }, 700);
 }
 
 function selectAsset(assetId, lyr) {

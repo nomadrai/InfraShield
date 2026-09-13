@@ -19,6 +19,7 @@ cascade - there are no scripted results anywhere.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import time
 import uuid
@@ -27,10 +28,11 @@ from pathlib import Path
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from infrashield.config import load_study_area
+from infrashield.config import get_settings, load_study_area
 from infrashield.risk.scenario import run_scenario
 from infrashield.store import (
     list_simulations,
@@ -191,6 +193,11 @@ def meta() -> dict:
         "hazards": HAZARDS,
         "groups": GROUP_LABELS,
         "counts": {name: len(gdf) for name, gdf in state["layers"].items()},
+        "basemap": {
+            "provider": "carto",
+            # dashboard appends ?key=<api_key> when one is configured in .env
+            "api_key": get_settings().get("CARTO_BASEMAP_KEY", ""),
+        },
     }
 
 
@@ -204,7 +211,10 @@ def layers() -> dict:
             # context layers: waterways drawn from OSM directly by the
             # frontend if needed; residential polygons only for stats
             continue
-        props = ["osm_type", "osm_id", "name", "category", "group_name"]
+        # `tags` is included so the frontend can pick the right cartographic
+        # symbol per OSM kind (hospital vs fire_station vs police, pylon vs
+        # substation, ...).
+        props = ["osm_type", "osm_id", "name", "category", "group_name", "tags"]
         cols = [c for c in props if c in gdf.columns]
         gj = gdf[cols + ["geometry"]].to_crs("EPSG:4326").__geo_interface__
         out[name] = {
@@ -345,4 +355,20 @@ def health() -> dict:
 # so /api/* routes take precedence.
 _WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 if _WEB_DIR.exists():
+
+    @app.get("/", include_in_schema=False)
+    def index() -> HTMLResponse:
+        """Serve the dashboard with server-side config injected.
+
+        The CARTO basemap API key (optional, .env: CARTO_BASEMAP_KEY) is
+        injected before app.js loads so the tile layer is built with it.
+        """
+        html = (_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        key = get_settings().get("CARTO_BASEMAP_KEY", "")
+        inject = f"<script>window.__basemapKey = {json.dumps(key)};</script>\n"
+        return HTMLResponse(
+            html.replace("</body>", inject + "</body>", 1),
+            headers={"Cache-Control": "no-cache"},
+        )
+
     app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
