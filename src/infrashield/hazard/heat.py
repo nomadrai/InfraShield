@@ -39,18 +39,25 @@ class HeatSimulator:
     """Static heat field: anomaly + lapse + UHI proxies (no time stages)."""
 
     def __init__(self, terrain: TerrainData, green_cells: np.ndarray | None = None,
-                 water_cells: np.ndarray | None = None) -> None:
+                 water_cells: np.ndarray | None = None,
+                 builtup_cells: np.ndarray | None = None) -> None:
         self.t = terrain
         self.green = green_cells
         self.water = water_cells
+        self.builtup = builtup_cells
 
     def _cooling_field(self) -> np.ndarray:
-        """Cooling contribution (C, negative) from green/water proximity."""
+        """Local temperature shift (C) from land cover / proximity.
+
+        Water bodies cool their surroundings most (evaporation); parks and
+        vegetation mildly; dense built-up areas *heat* their surroundings
+        (urban heat island: storage, anthropogenic waste heat)."""
         t = self.t
-        cool = np.zeros((t.height, t.width), dtype=np.float64)
+        shift = np.zeros((t.height, t.width), dtype=np.float64)
         from scipy import ndimage as ndi
 
         for mask, strength, radius_cells in (
+            (self.builtup, -2.5, 4),   # negative cooling = heating
             (self.green, 2.0, 12),
             (self.water, 3.0, 10),
         ):
@@ -58,8 +65,8 @@ class HeatSimulator:
                 continue
             dist = ndi.distance_transform_edt(~mask, sampling=t.cell_area_m2 ** 0.5)
             influence = np.clip(1.0 - dist / (radius_cells * t.cell_area_m2 ** 0.5), 0, 1)
-            cool -= strength * influence
-        return cool
+            shift -= strength * influence
+        return shift
 
     def run(self, scenario: HeatScenario) -> dict:
         t = self.t
