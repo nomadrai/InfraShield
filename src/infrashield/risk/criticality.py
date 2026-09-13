@@ -75,11 +75,15 @@ def _tags(row) -> dict:
 def _cached_class_params(group: str, category: str, highway: str | None,
                          amenity: str | None, power: str | None, railway: str | None,
                          aeroway: str | None, tower_type: str | None,
-                         man_made: str | None, emergency: str | None) -> dict:
+                         man_made: str | None, emergency: str | None,
+                         bridge: str | None = None, tunnel: str | None = None,
+                         cutting: str | None = None, embankment: str | None = None) -> dict:
     tags = {
         "highway": highway, "amenity": amenity, "power": power,
         "railway": railway, "aeroway": aeroway, "tower:type": tower_type,
         "man_made": man_made, "emergency": emergency,
+        "bridge": bridge, "tunnel": tunnel, "cutting": cutting,
+        "embankment": embankment,
     }
     # criticality
     crit = GROUP_CRITICALITY.get(group, 0.4)
@@ -125,6 +129,8 @@ def asset_params(row) -> dict:
         tags.get("highway"), tags.get("amenity"), tags.get("power"),
         tags.get("railway"), tags.get("aeroway"), tags.get("tower:type"),
         tags.get("man_made"), tags.get("emergency"),
+        bridge=tags.get("bridge"), tunnel=tags.get("tunnel"),
+        cutting=tags.get("cutting"), embankment=tags.get("embankment"),
     )
 
 

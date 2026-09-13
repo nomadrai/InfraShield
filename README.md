@@ -67,6 +67,43 @@ python scripts/process_osm.py hospitals         # process one category
 
 Or via make: `make setup`, `make fetch`, `make process`.
 
+## Simulation dashboard (Phase 2)
+
+The full risk engine + interactive dashboard now run on the real data — DEM-driven
+flood propagation, heat/cyclone fields, road-network impact, dependency cascades.
+See **[docs/algorithm.md](docs/algorithm.md)** for the algorithm comparison decision,
+the pipeline, and every documented simplification.
+
+```bash
+# one-time: fetch the real Copernicus GLO-30 DEM for the AOI
+python scripts/fetch_dem.py
+
+# start the API + dashboard (serves web/ at /)
+uvicorn infrashield.api:app --app-dir src
+# open http://127.0.0.1:8000
+```
+
+The dashboard lets you pick hazard (flood / extreme heat / cyclone), severity and —
+for cyclones — the landfall point on the map, then replays the actual simulated
+stages: water spreading through depressions and channels, infrastructure turning
+amber/red as the hazard reaches it, cascade edges lighting up, and per-asset
+risk vs impact inspection (including per-stage exposure charts and dependency
+chains). Every number shown is computed by the engine from the DEM + OSM data;
+nothing is scripted.
+
+Run the whole pipeline headlessly:
+
+```python
+from infrashield.store import load_terrain, load_layers, build_dependency_graph
+from infrashield.risk.scenario import run_scenario
+
+result = run_scenario(
+    load_terrain(), load_layers(), build_dependency_graph(load_layers()),
+    "flood", {"rainfall_mm": 300, "duration_h": 24},
+)
+print(result.summary)
+```
+
 ## PostgreSQL + PostGIS (optional for core pipeline)
 
 ```bash
@@ -123,9 +160,14 @@ pytest            # offline unit tests (fixture-based, no network)
 
 ## Current status
 
-Foundation phase — runnable acquisition → processing → storage pipeline for the
-Mumbai AOI, plus schema and API prep for the hazard/risk engine (not yet
-implemented, by design). See [PROJECT.md](PROJECT.md) for the roadmap.
+- **Phase 1 (done):** acquisition → processing → storage pipeline for the Mumbai AOI.
+- **Phase 2 (done):** hazard engine (topographic flood, heat, cyclone), exposure →
+  risk → network → cascade pipeline, FastAPI backend, interactive dashboard,
+  57 offline tests. Algorithm decisions and assumptions: [docs/algorithm.md](docs/algorithm.md).
+- **Next:** calibrated hydrology (gauge/radar forcing), curated dependency edges
+  (utility feeders), async job queue for long scenarios, PostGIS-backed store.
+
+See [PROJECT.md](PROJECT.md) for the original roadmap.
 
 ## License
 

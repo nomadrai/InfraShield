@@ -22,7 +22,8 @@ def _client(tmp_path: Path) -> OverpassClient:
 def test_render_query_wraps_body_and_bbox(tmp_path: Path) -> None:
     client = _client(tmp_path)
     area = client.study_area
-    rendered = client.render_query('way["highway"="primary"];', comment="test")
+    # NB: Overpass QL has no `#` comments (only //), so no comment kwarg
+    rendered = client.render_query('way["highway"="primary"];')
 
     assert rendered.startswith(f"[out:json][timeout:{client.timeout}][bbox:{area.bbox_overpass}];")
     assert 'way["highway"="primary"];' in rendered

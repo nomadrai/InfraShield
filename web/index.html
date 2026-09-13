@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InfraShield — Infrastructure Risk &amp; Disaster Simulation</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ======================= HEADER ======================= -->
+  <header id="topbar">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2L3 6v6c0 5 3.8 8.6 9 10 5.2-1.4 9-5 9-10V6l-9-4z" fill="#2563eb" opacity=".15"/>
+        <path d="M12 2L3 6v6c0 5 3.8 8.6 9 10 5.2-1.4 9-5 9-10V6l-9-4z" stroke="#2563eb" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M8.5 12l2.4 2.4L15.5 9.8" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <h1>InfraShield</h1>
+        <span id="study-name">Infrastructure risk &amp; disaster simulation</span>
+      </div>
+    </div>
+    <div id="sim-status" class="sim-status idle" data-state="idle">
+      <span class="status-dot"></span><span id="sim-status-text">Ready</span>
+    </div>
+    <div class="header-meta" id="header-meta"></div>
+  </header>
+
+  <div id="main">
+
+    <!-- ======================= SIDEBAR ======================= -->
+    <aside id="sidebar">
+      <section class="panel">
+        <h2>Scenario</h2>
+        <div class="field">
+          <label>Hazard type</label>
+          <div class="segmented" id="hazard-picker" role="tablist"></div>
+        </div>
+        <div class="field" id="severity-field">
+          <label>Severity <output id="severity-out"></output></label>
+          <input type="range" id="severity" />
+          <div class="range-note" id="severity-note"></div>
+        </div>
+        <div class="field hidden" id="secondary-field">
+          <label id="secondary-label"></label>
+          <input type="range" id="secondary" />
+          <div class="range-note" id="secondary-note"></div>
+        </div>
+        <div class="actions">
+          <button id="btn-run" class="btn primary">Run simulation</button>
+          <button id="btn-play" class="btn" disabled title="Replay hazard stages">Play stages</button>
+          <button id="btn-reset" class="btn ghost">Reset</button>
+        </div>
+        <div id="progress" class="progress hidden">
+          <div class="progress-bar"></div>
+          <span class="progress-text">Running…</span>
+        </div>
+      </section>
+
+      <section class="panel" id="summary-panel">
+        <h2>Results</h2>
+        <div id="summary-cards" class="cards"></div>
+        <div id="group-bars" class="group-bars"></div>
+        <div id="network-stats" class="netstats hidden"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Priority ranking</h2>
+        <p class="hint">ranked by priority = max(risk, impact) + 0.3·min(risk, impact)</p>
+        <ol id="rank-list" class="rank-list"></ol>
+      </section>
+    </aside>
+
+    <!-- ======================= MAP ======================= -->
+    <main id="map-wrap">
+      <div id="map"></div>
+      <div id="map-legend" class="legend hidden"></div>
+      <div id="stage-scrubber" class="scrubber hidden">
+        <button id="scrub-play" class="scrub-btn" title="Play/pause">▶</button>
+        <input type="range" id="scrub-range" min="0" value="0" step="1">
+        <span id="scrub-label"></span>
+      </div>
+      <div id="map-badges" class="map-badges">
+        <button class="badge active" data-layer="hazard" id="badge-hazard">Hazard</button>
+        <button class="badge" data-layer="cascade" id="badge-cascade">Cascades</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- ======================= INSPECTOR ======================= -->
+  <aside id="inspector" class="hidden" aria-hidden="true">
+    <div class="insp-head">
+      <h2 id="insp-title">Asset</h2>
+      <button id="insp-close" class="icon-btn" aria-label="Close">✕</button>
+    </div>
+    <div id="insp-body"></div>
+  </aside>
+
+  <div id="toast" class="toast hidden"></div>
+</div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

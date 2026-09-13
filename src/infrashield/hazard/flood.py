@@ -147,42 +147,27 @@ class FloodSimulator:
             return self._spill_targets
         t = self.t
         recv = t.flow_dir.ravel()
-        dep_of = self._dep_of_cell
         down = self._resolve_catchments()
         targets: dict[int, list[tuple[int, float]]] = {}
         for dep in t.depressions:
             cells = dep["cells"]
-            in_dep = set(cells.tolist())
-            cell_set = in_dep
+            cell_set = set(cells.tolist())
             rim_targets: dict[int, int] = {}
             for cell in cells:
                 r0, c0 = divmod(int(cell), t.width)
-                # rim cell: has a 4-neighbour outside the depression
-                is_rim = False
+                # rim cell: has a 4-neighbour outside the depression. The
+                # overflow goes to whatever catchment that outside neighbour
+                # drains into (its `down` label) - never back into itself.
                 for dr, dc in ((0, 1), (1, 0), (0, -1), (-1, 0)):
                     nr, nc = r0 + dr, c0 + dc
                     if 0 <= nr < t.height and 0 <= nc < t.width:
                         nidx = nr * t.width + nc
-                        if nidx not in cell_set:
-                            is_rim = True
-                            break
-                if not is_rim:
-                    continue
-                # walk downstream from the rim cell
-                j = recv[int(cell)]
-                steps = 0
-                dest = -1
-                while 0 <= j < len(dep_of) and steps < 20_000:
-                    if dep_of[j] >= 0:
-                        dest = int(dep_of[j])
+                        if nidx in cell_set:
+                            continue
+                        dest = int(down[nidx])
+                        if dest >= 0 and dest != dep["id"]:
+                            rim_targets[dest] = rim_targets.get(dest, 0) + 1
                         break
-                    if down[j] != -2 and down[j] >= 0:
-                        dest = int(down[j])
-                        break
-                    j = recv[j]
-                    steps += 1
-                if dest >= 0:
-                    rim_targets[dest] = rim_targets.get(dest, 0) + 1
             total = sum(rim_targets.values())
             targets[dep["id"]] = (
                 [(d, cnt / total) for d, cnt in sorted(rim_targets.items())] if total else []
@@ -348,8 +333,9 @@ class FloodSimulator:
                 if level <= 0:
                     continue
                 cells = dep_by_id[i]["cells"]
+                # NB: fancy indexing returns copies - assign back explicitly
                 d = np.clip(level - dem_flat[cells], 0.0, None)
-                np.maximum(depth[cells], d, out=depth[cells])
+                depth[cells] = np.maximum(depth[cells], d)
             depth += chan_stage[si].ravel()
             if surge_stage[si] > 0:
                 coastal = np.clip(surge_stage[si] - dem_flat, 0.0, None)

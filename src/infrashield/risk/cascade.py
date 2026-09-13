@@ -50,16 +50,18 @@ def compute_cascade_impacts(
         strength = -neg
         if strength < best.get(node, 0.0) and node in best:
             continue  # stale entry (already propagated stronger)
-        for pred, _, data in rev.out_edges(node, data=True):
+        # NB: out_edges yields (source, target, data); in the reversed graph
+        # the TARGET is the dependent that feels the failure.
+        for _, dependent, data in rev.out_edges(node, data=True):
             w = strength * float(data.get("weight", 1.0))
             if w < 0.05:  # same decay floor as cascade_from
                 continue
-            if w > best.get(pred, 0.0):
-                best[pred] = w
-                depth[pred] = min(depth.get(pred, 99), hops + 1)
-                dependents[pred] = dependents.get(pred, 0) + 1
+            if w > best.get(dependent, 0.0):
+                best[dependent] = w
+                depth[dependent] = min(depth.get(dependent, 99), hops + 1)
+                dependents[dependent] = dependents.get(dependent, 0) + 1
                 if hops + 1 <= 8:  # bounded propagation depth
-                    heapq.heappush(heap, (-w, hops + 1, pred))
+                    heapq.heappush(heap, (-w, hops + 1, dependent))
 
     results: dict[str, dict] = {}
     for node, val in best.items():
@@ -67,5 +69,11 @@ def compute_cascade_impacts(
             "cascade": round(val, 3),
             "depth": depth.get(node, 99),
             "dependents": dependents.get(node, 1),
+        }
+    # failing assets themselves: they are the impact sources
+    for a in failing:
+        results[a] = {
+            "cascade": 1.0, "depth": 0,
+            "dependents": graph.in_degree(a),
         }
     return results
