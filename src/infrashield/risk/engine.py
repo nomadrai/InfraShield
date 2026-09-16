@@ -155,6 +155,13 @@ class AssetAssessment:
     network_impact: float = 0.0
     cascade_impact: float = 0.0
     affected_population: int = 0
+    # explainable H x V x C breakdown (see risk/scoring.py; filled by the
+    # scenario orchestrator after network/cascade stages)
+    risk10: float = 0.0
+    band: str = "safe"
+    status: str = "safe"
+    hvc: dict = field(default_factory=dict)
+    action: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -172,6 +179,11 @@ class AssetAssessment:
             "cascade_impact": round(self.cascade_impact, 4),
             "stage_exposure": [round(x, 3) for x in self.stage_exposure],
             "affected_population": self.affected_population,
+            "risk10": self.risk10,
+            "band": self.band,
+            "status": self.status,
+            "hvc": self.hvc,
+            "action": self.action,
         }
 
 
@@ -234,6 +246,7 @@ def assess_assets(
     wind_grid = hazard_fields.get("wind_frac")
     surge_grid = hazard_fields.get("surge_depth")
     heat_grid = hazard_fields.get("heat_index")
+    susceptibility_grid = hazard_fields.get("susceptibility")
 
     geoms = list(assets_gdf.geometry)
     owner, lons, lats, n = build_geometry_samples(geoms, terrain)
@@ -245,6 +258,8 @@ def assess_assets(
     heat_vals = sample(heat_grid, reducer="mean") if hazard_type == "heat" else None
     wind_vals = sample(wind_grid) if hazard_type == "cyclone" else None
     surge_vals = sample(surge_grid) if hazard_type == "cyclone" else None
+    sus_vals = (sample(susceptibility_grid, reducer="mean")
+                if hazard_type == "landslide" else None)
 
     out: list[AssetAssessment] = []
     for idx, (_, row) in enumerate(assets_gdf.iterrows()):
@@ -294,6 +309,14 @@ def assess_assets(
             sd = float(surge_vals[idx])
             depth_m = sd if sd > 0 else None
             wind_ms = float(wind_vals[idx]) * 60.0
+            stage_exp = []
+        elif hazard_type == "landslide":
+            sus = float(sus_vals[idx])
+            exposure = float(min(1.0, max(0.0, sus)))
+            # Buried/impacted by moving debris: roads on steep ground are the
+            # classic first loss; facilities fail on access, not burial.
+            if row.get("group_name") in ("health_education", "energy", "communication", "water"):
+                exposure *= 0.6  # facilities fail on access/backup, not burial
             stage_exp = []
         else:
             exposure = 0.0

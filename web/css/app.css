@@ -197,6 +197,10 @@ input[type="range"]::-moz-range-thumb {
 .infra-marker.st-failed .marker-ring { border-color: #ef4444; box-shadow: 0 0 6px #ef444488; }
 .infra-marker.st-exposed .marker-ring { border-color: #f59e0b; }
 .infra-marker.st-cascade .marker-ring { border-color: #fb923c; border-style: dashed; }
+/* Section 8 band aliases: critical -> red ring, elevated -> yellow ring */
+.infra-marker.st-critical .marker-ring { border-color: #ef4444; box-shadow: 0 0 6px #ef444488; }
+.infra-marker.st-elevated .marker-ring { border-color: #fbbf24; }
+.infra-marker.st-safe .marker-ring { border-color: transparent; box-shadow: none; }
 
 .cluster-bubble {
   display: grid; place-items: center; width: 30px; height: 30px;
@@ -210,6 +214,24 @@ input[type="range"]::-moz-range-thumb {
   display: inline-block; margin-right: 7px;
 }
 .legend svg { filter: drop-shadow(0 1px 1px #0008); }
+
+/* ---------- asset metadata popup ---------- */
+.meta-popup .leaflet-popup-content { margin: 10px 12px; font-size: 12px; }
+.popup-head { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 7px; }
+.popup-title { font-weight: 700; font-size: 13px; line-height: 1.25; }
+.popup-type { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+.meta-table { margin: 6px 0; border-top: 1px dashed var(--line); }
+.meta-row {
+  display: flex; justify-content: space-between; gap: 10px;
+  padding: 3px 0; border-bottom: 1px dotted var(--line); font-size: 11px;
+}
+.meta-row span { color: var(--muted); }
+.meta-row b { font-weight: 600; text-align: right; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta-row.sim b { color: var(--accent2); font-family: var(--mono); }
+.popup-more {
+  width: 100%; margin-top: 7px; padding: 6px; font-size: 11px;
+  background: #16223b; border-color: var(--accent);
+}
 
 /* dark CartoDB basemap attribution legibility */
 .leaflet-container { font-family: var(--font); }
@@ -315,6 +337,40 @@ input[type="range"]::-moz-range-thumb {
   padding: 10px 18px; border-radius: 9px; font-size: 13px; z-index: 2000;
   box-shadow: 0 8px 30px #0008;
 }
+
+/* ---------- boot overlay ---------- */
+/* Covers the raw map while /api/meta + /api/layers load; removed by
+   app.js boot() in both the success and error paths. */
+#boot-overlay {
+  position: fixed; inset: 0; z-index: 3000;
+  display: grid; place-items: center;
+  background: var(--bg);
+  transition: opacity .5s ease;
+}
+#boot-overlay.gone { opacity: 0; pointer-events: none; }
+.boot-box { text-align: center; max-width: 420px; padding: 0 24px; }
+.boot-box h2 { margin: 14px 0 6px; font-size: 16px; }
+.boot-box p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.spinner {
+  width: 34px; height: 34px; margin: 0 auto;
+  border-radius: 50%;
+  border: 3px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+
+/* ---------- skeleton placeholders (results panel while booting) ---------- */
+.skeleton {
+  border-radius: 8px; border: 1px solid var(--line); background: #0f1727;
+  position: relative; overflow: hidden;
+}
+.skeleton::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, #ffffff12, transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.4s infinite;
+}
+.skeleton:not(.on) { visibility: hidden; }
+@keyframes shimmer { to { transform: translateX(100%); } }
 
 /* responsive */
 @media (max-width: 1100px) {

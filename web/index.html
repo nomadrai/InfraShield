@@ -12,6 +12,15 @@
 <body>
 <div id="app">
 
+  <!-- boot overlay: visible until /api/meta + /api/layers resolve -->
+  <div id="boot-overlay">
+    <div class="boot-box">
+      <div class="spinner"></div>
+      <h2>Loading InfraShield…</h2>
+      <p id="boot-detail">Fetching study-area metadata, asset layers and baseline exposure…</p>
+    </div>
+  </div>
+
   <!-- ======================= HEADER ======================= -->
   <header id="topbar">
     <div class="brand">
@@ -64,7 +73,12 @@
 
       <section class="panel" id="summary-panel">
         <h2>Results</h2>
-        <div id="summary-cards" class="cards"></div>
+        <div id="summary-cards" class="cards">
+          <div class="skeleton" style="height:52px"></div>
+          <div class="skeleton" style="height:52px"></div>
+          <div class="skeleton" style="height:52px"></div>
+          <div class="skeleton" style="height:52px"></div>
+        </div>
         <div id="group-bars" class="group-bars"></div>
         <div id="network-stats" class="netstats hidden"></div>
       </section>
@@ -86,6 +100,7 @@
         <span id="scrub-label"></span>
       </div>
       <div id="map-badges" class="map-badges">
+        <button class="badge active" data-layer="baseline" id="badge-baseline">Baseline exposure</button>
         <button class="badge active" data-layer="hazard" id="badge-hazard">Hazard</button>
         <button class="badge" data-layer="cascade" id="badge-cascade">Cascades</button>
       </div>
@@ -111,6 +126,6 @@
 
 <script src="vendor/leaflet.js?v=2"></script>
 <script src="vendor/leaflet.markercluster.js?v=2"></script>
-<script src="js/app.js?v=3"></script>
+<script src="js/app.js?v=7"></script>
 </body>
 </html>

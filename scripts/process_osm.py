@@ -38,6 +38,7 @@ from infrashield.geo.processing import (  # noqa: E402
     build_processing_summary,
     clean_geometries,
     clip_to_study_area,
+    filter_category,
     layer_summary,
 )
 
@@ -66,13 +67,14 @@ def process_category(name: str, study_area) -> tuple[str, dict]:
     gdf = clean_geometries(gdf)
     gdf = clip_to_study_area(gdf, study_area)
     gdf = add_length_km(gdf)
+    gdf, audit = filter_category(gdf, category.layer)
 
     out_dir = PROCESSED_DATA_DIR / "geojson"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{category.layer}.geojson"
     gdf.to_file(out_path, driver="GeoJSON")
 
-    summary = layer_summary(gdf)
+    summary = layer_summary(gdf, audit)
     summary["raw_path"] = str(raw_path)
     summary["output"] = str(out_path)
     logger.info("%s: %s", category.layer, summary)

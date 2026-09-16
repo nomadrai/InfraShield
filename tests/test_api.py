@@ -48,12 +48,14 @@ def client(monkeypatch):
 
 
 def test_health(client):
-    assert client.get("/api/health").json() == {"ok": True}
+    r = client.get("/api/health").json()
+    assert r["ok"] is True
+    assert r["state"] == "ready"  # lazy mode: no startup warmup in tests
 
 
 def test_meta_shape(client):
     m = client.get("/api/meta").json()
-    assert set(m["hazards"]) == {"flood", "heat", "cyclone"}
+    assert set(m["hazards"]) == {"flood", "heat", "cyclone", "landslide"}
     assert m["study_area"]["bbox"] == [72.855, 19.085, 72.965, 19.175]
 
 

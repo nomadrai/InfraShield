@@ -33,10 +33,20 @@ import numpy as np
 from infrashield.hazard.cyclone import CycloneScenario, CycloneSimulator
 from infrashield.hazard.flood import FloodScenario, FloodSimulator
 from infrashield.hazard.heat import HeatScenario, HeatSimulator
+from infrashield.hazard.landslide import LandslideScenario, LandslideSimulator
 from infrashield.hazard.terrain import TerrainData
 from infrashield.risk.cascade import compute_cascade_impacts
 from infrashield.risk.engine import AssetAssessment, assess_assets
 from infrashield.risk.network import RoadNetwork
+from infrashield.risk.scoring import (
+    band_of,
+    intensity as score_intensity,
+    asset_class,
+    criticality as criticality_0_10,
+    recommended_action,
+    risk_score,
+    vulnerability as score_vulnerability,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +255,24 @@ def run_scenario(
         stage_labels = ["storm surge", "peak wind"]
         fields = {"wind_frac": result["wind_frac"], "surge_depth": result["surge_depth_m"]}
         hazard_meta = {"peak_wind_ms": result["peak_wind_ms"], "max_surge_m": result["max_surge_m"]}
+    elif hazard_type == "landslide":
+        sim = LandslideSimulator(terrain)
+        scenario = LandslideScenario(
+            slope_threshold_deg=float(params.get("slope_threshold_deg", 15.0)),
+            rainfall_mm=float(params.get("rainfall_mm", 300)),
+            duration_h=float(params.get("duration_h", 24)),
+            name=str(params.get("name", "landslide")),
+        )
+        result = sim.run(scenario)
+        stages = [result["susceptibility"]]
+        stage_labels = ["peak saturation"]
+        fields = {"susceptibility": result["susceptibility"]}
+        hazard_meta = {
+            "susceptible_fraction": result["susceptible_fraction"],
+            "max_susceptibility": result["max_susceptibility"],
+            "slope_threshold_deg": result["slope_threshold_deg"],
+            "rain_factor": result["rain_factor"],
+        }
     else:
         raise ValueError(f"Unknown hazard type: {hazard_type}")
 
@@ -335,6 +363,8 @@ def run_scenario(
     # once per street. W_POP normalises by POP_PER_CAPITA_FACTOR so the pop
     # term is bounded like the others.
     FACILITY_GROUPS = {"health_education", "energy", "communication", "transport", "water"}
+    import json as _json
+
     for a in assessments:
         materially_affected = a.exposure > 0.05 or a.network_impact > 0 or a.cascade_impact > 0
         pop = (
@@ -353,17 +383,63 @@ def run_scenario(
         a.impact = float(min(1.35, impact))
         a.priority = float(max(a.risk, a.impact) + 0.3 * min(a.risk, a.impact))
 
+        # ---- explainable H x V x C breakdown (scoring.py is the source) ----
+        tags = {}
+        if isinstance(a.name, str) is False and getattr(a, "_tags", None):
+            tags = a._tags
+        cls = asset_class(a.group, a.category, tags)
+        v10 = score_vulnerability(cls)
+        if hazard_type == "flood":
+            h10 = score_intensity("flood", depth_m=a.depth_m or 0.0)
+            h_note = f"flood depth {a.depth_m or 0:.2f} m"
+        elif hazard_type == "heat":
+            h10 = score_intensity("heat", heat_index=a.exposure)
+            h_note = f"heat index {a.exposure:.2f}"
+        elif hazard_type == "cyclone":
+            h10 = score_intensity("cyclone", wind_frac=(a.wind_ms or 0.0) / 60.0,
+                                  surge_depth_m=a.depth_m or 0.0)
+            h_note = (f"wind {(a.wind_ms or 0):.0f} m/s"
+                      + (f", surge {a.depth_m:.1f} m" if a.depth_m else ""))
+        elif hazard_type == "landslide":
+            h10 = score_intensity("landslide", susceptibility=a.exposure)
+            h_note = f"landslide susceptibility {a.exposure:.2f}"
+        else:
+            h10 = 10.0 * a.exposure
+            h_note = ""
+        c10 = criticality_0_10(pop, redundancy_loss, a.dependents)
+        r10 = risk_score(h10, v10, c10)
+        band = band_of(r10)
+        a.risk10 = r10
+        a.band = band
+        a.hvc = {
+            "H": round(h10, 2), "H_note": h_note,
+            "V": v10, "V_class": cls,
+            "C": c10,
+            "C_parts": {"pop": pop, "redundancy_loss": round(redundancy_loss, 2),
+                        "dependents": a.dependents},
+            "formula": (
+                f"H={h10:.1f} ({h_note}) x V={v10:g} ({cls}) x C={c10:g} "
+                f"({a.dependents} downstream, pop {pop}) / 100 = {r10:g}"
+            ),
+            "R": r10,
+        }
+        a.action = recommended_action(cls, band)
+        a.status = ("cut_off" if a.network_impact >= 1.0 and band != "safe" else band)
+
+    # "high risk" = Elevated or Critical bands on the 0..10 scale
+    # (consistent with Section 3 thresholds used everywhere in the UI).
     summary = {
         "hazard": hazard_meta,
         "assets_total": len(assessments),
         "assets_exposed": sum(1 for a in assessments if a.exposure > 0.05),
-        "assets_high_risk": sum(1 for a in assessments if a.risk >= 0.45),
+        "assets_high_risk": sum(1 for a in assessments if (a.risk10 or 0) >= 4.0),
         "assets_high_impact": sum(1 for a in assessments if a.impact >= 0.5),
         "affected_population": int(sum(a.affected_population for a in assessments)),
         "by_group": {
             g: {
                 "exposed": sum(1 for a in assessments if a.group == g and a.exposure > 0.05),
-                "high_risk": sum(1 for a in assessments if a.group == g and a.risk >= 0.45),
+                "high_risk": sum(1 for a in assessments
+                                 if a.group == g and (a.risk10 or 0) >= 4.0),
             }
             for g in sorted({a.group for a in assessments})
         },

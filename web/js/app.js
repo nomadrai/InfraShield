@@ -14,6 +14,7 @@ const S = {
   pointClusters: {},   // group -> L.markerClusterGroup
   pointZoomBound: {},  // group -> min zoom for visibility
   plainGeoms: {},      // group -> raw GeoJSON (icons rebuilt on zoom)
+  featureIndex: new Map(), // asset_id -> GeoJSON feature (for metadata popup)
   stageIdx: 0,
   playing: false,
   playTimer: null,
@@ -22,6 +23,8 @@ const S = {
   cascadeLayer: null,
   landfallMarker: null,
   landfall: null,      // {lon, lat} for cyclone
+  showBaseline: true,  // baseline-exposure choropleth toggle
+  baselineOverlay: null,
   selectedId: null,
   showCascade: false,
 };
@@ -86,6 +89,9 @@ function setBasemap(name) {
 }
 
 map.on("zoomend", applyZoomGating);
+/* clicking elsewhere on the map closes the metadata popup (Leaflet closes
+   it natively; we just clear our reference) */
+map.on("popupclose", () => { S.metaPopup = null; });
 setBasemap("satellite");
 
 /* ------------------------------------------------------------------ */
@@ -151,6 +157,7 @@ const POINT_CFG = {
 };
 const ICON_ZOOM = 15;           // >= this: individual icons (clusters before)
 
+/* larger hit area: 26px box so small icons stay clickable when dense */
 function makeIcon(kind, stateKey) {
   const sym = SYMBOLS[kind] || SYMBOLS.clinic;
   const ring = stateKey === "failed" ? "#ef4444"
@@ -161,7 +168,7 @@ function makeIcon(kind, stateKey) {
     className: cls,
     html: `<span class="marker-ring" style="border-color:${ring}"></span>` +
           `<svg viewBox="0 0 24 24" width="19" height="19">${sym.shape}</svg>`,
-    iconSize: [23, 23], iconAnchor: [11, 11],
+    iconSize: [26, 26], iconAnchor: [13, 13],
   });
 }
 
@@ -197,31 +204,94 @@ function setHTML(sel, html) {
   if (el) el.innerHTML = html;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* Wait for the backend to finish its startup warmup (terrain/DEM
+   preprocessing runs in a background thread on the server). Polls
+   /api/health; gives up after ~2 min so the caller's error path can
+   surface the problem instead of hanging forever. */
+async function waitUntilWarm(maxMs = 120000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    try {
+      const h = await fetch("/api/health").then((r) => r.json());
+      if (h.ok) return true;
+      if (h.state === "error") throw new Error(h.detail || "backend warmup failed");
+      setText("#boot-detail", "Backend warming up — the first run pre-processes the DEM; later loads are instant.");
+    } catch { /* mid-boot hiccup: keep polling */ }
+    await sleep(750);
+  }
+  return false;
+}
+
+/* fetch JSON with bounded retries: transient 503s (backend warming) and
+   network hiccups retry with backoff; other HTTP errors are fatal. */
+async function fetchWithRetry(url, attempts = 3) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res.json();
+      if (res.status === 503) {
+        lastErr = new Error(`${url} 503 (warming)`);
+        await waitUntilWarm();
+        continue;
+      }
+      throw new Error(`${url} ${res.status}`);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await sleep(600 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
+function showSkeletons(on) {
+  for (const el of document.querySelectorAll(".skeleton")) el.classList.toggle("on", on);
+}
+
+function hideBootOverlay() {
+  const ov = $("#boot-overlay");
+  if (!ov) return;
+  ov.classList.add("gone");
+  setTimeout(() => ov.remove(), 650);
+}
+
 async function boot() {
   try {
-    const [meta, layers] = await Promise.all([
-      fetch("/api/meta").then((r) => {
-        if (!r.ok) throw new Error(`/api/meta ${r.status}`);
-        return r.json();
-      }),
-      fetch("/api/layers").then((r) => {
-        if (!r.ok) throw new Error(`/api/layers ${r.status}`);
-        return r.json();
-      }),
+    setStatus("running", "Loading data…");
+    showSkeletons(true);
+    const [meta, layers, baseline] = await Promise.all([
+      fetchWithRetry("/api/meta"),
+      fetchWithRetry("/api/layers"),
+      fetch("/api/baseline").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]);
     S.meta = meta;
     S.layers = layers;
+    buildBaselineLayer(baseline); // static choropleth under everything
+    // index every feature once for the metadata popup
+    S.featureIndex = new Map();
+    for (const gj of Object.values(layers)) {
+      for (const f of gj.features || []) S.featureIndex.set(featureId(f), f);
+    }
 
     setText("#study-name", `${meta.study_area.name} · DEM ${meta.study_area.elevation_range_m[0]}–${meta.study_area.elevation_range_m[1]} m · ${meta.study_area.grid.cell_size_m} m grid`);
     const counts = Object.entries(meta.counts || {}).map(([k, v]) => `<b>${fmt.int(v)}</b> ${k.replace("_", " ")}`).join(" · ");
+    if (meta.unique_assets) counts += ` · <b>${fmt.int(meta.unique_assets)}</b> unique assets`;
     setHTML("#header-meta", counts);
 
     buildAssetLayers();
     buildHazardPicker();
+    renderSummary(null); // populate the results panel with its empty-state hint
+    setStatus("done", "Ready");
   } catch (err) {
     console.error("boot failed:", err);
+    setText("#boot-detail", `Backend unreachable: ${err.message}. Is the server running (make serve)?`);
     toast(`Failed to load backend data: ${err.message}`);
     setStatus("error", "Backend unreachable");
+  } finally {
+    showSkeletons(false);
+    hideBootOverlay();
   }
 }
 
@@ -258,9 +328,10 @@ function buildAssetLayers() {
         const [lon, lat] = f.geometry.coordinates;
         const mk = L.marker([lat, lon], { icon: makeIcon(kind, null), title: f.properties?.name || id });
         mk.__assetId = id; mk.__kind = kind;
-        mk.on("click", () => selectAsset(id, mk));
+        mk.on("click", () => selectAsset(id, mk, mk.getLatLng()));
         markers.push(mk);
         rememberCoords(f);
+        S.featureIndex.set(id, f);
       }
       const cluster = L.markerClusterGroup({
         maxClusterRadius: 44,
@@ -279,9 +350,11 @@ function buildAssetLayers() {
       const layer = L.geoJSON(gj, {
         style: () => styleFor(group, null),
         onEachFeature: (feature, lyr) => {
-          lyr.on("click", () => selectAsset(feature.id ?? feature.properties.osm_type + "/" + feature.properties.osm_id, lyr));
+          const id = feature.id ?? feature.properties.osm_type + "/" + feature.properties.osm_id;
+          S.featureIndex.set(id, feature);
+          lyr.on("click", (e) => selectAsset(id, lyr, e.latlng));
           lyr.on("mouseover", () => lyr.setStyle({ weight: (GROUP_STYLE[group]?.weight || 1.5) + 1.5, opacity: 1 }));
-          lyr.on("mouseout", () => lyr.setStyle(styleFor(group, S.assetState.get(feature.id))));
+          lyr.on("mouseout", () => lyr.setStyle(styleFor(group, S.assetState.get(id))));
           rememberCoords(feature);
         },
       });
@@ -302,8 +375,17 @@ function buildAssetLayers() {
 const RISK_COLOR = (r) =>
   r >= 0.6 ? "#ef4444" : r >= 0.4 ? "#f97316" : r >= 0.2 ? "#fbbf24" : "#fde68a";
 
+/* Section 8: ring state == risk band (0-4 safe / 4-7 elevated / 7+ critical)
+   when the 0..10 score is available; legacy 0..1 thresholds otherwise. */
 function markerState(a) {
   if (!a) return null;
+  if (a.status === "cut_off") return "failed";
+  if (a.risk10 != null) {
+    const band = a.band || bandOf10(a.risk10);
+    if (band === "critical") return "failed";      // red ring = Critical
+    if (band === "elevated") return "exposed";     // yellow ring = Elevated
+    return a.cascade_impact > 0 ? "cascade" : null; // Safe: no ring
+  }
   if (a.failed === true) return "failed";
   if (a.exposure > 0.4) return "exposed";
   if (a.risk >= 0.15 || a.cascade_impact > 0) return "cascade";
@@ -363,7 +445,22 @@ function styleFor(group, a) {
   const base = baseStyle(group);
   if (failed) {
     return { ...base, color: "#ef4444", weight: base.weight + 1.2, opacity: 1,
-      fillOpacity: 0.85, dashArray: "3 3" };
+      fillOpacity: 0.85, dashArray: "3 3" };  // red line = impassable
+  }
+  if (a.risk10 != null) {
+    const band = a.band || bandOf10(a.risk10);
+    if (band === "elevated") {
+      return { ...base, color: "#fbbf24", weight: base.weight + 0.8,
+        opacity: 1 };  // yellow line = reduced capacity / at risk
+    }
+    if (band === "safe") {
+      if (a.cascade_impact > 0) {
+        return { ...base, color: RISK_COLOR(a.risk || a.cascade_impact),
+          weight: base.weight + 0.8, opacity: 1 };
+      }
+      base.opacity = (base.opacity ?? 0.6) * 0.45;
+      return base;
+    }
   }
   if (a.risk >= 0.15 || a.cascade_impact > 0) {
     return { ...base, color: RISK_COLOR(a.risk || a.cascade_impact),
@@ -412,7 +509,7 @@ function refreshStyles(stageIdx = null) {
 /* ------------------------------------------------------------------ */
 /* hazard picker + params                                              */
 /* ------------------------------------------------------------------ */
-const HAZARD_ICONS = { flood: "🌊", heat: "🔥", cyclone: "🌀" };
+const HAZARD_ICONS = { flood: "🌊", heat: "🔥", cyclone: "🌀", landslide: "⛰️" };
 
 function buildHazardPicker() {
   const picker = $("#hazard-picker");
@@ -569,9 +666,8 @@ async function loadSimulation(sim) {
     S.stageCanvases.push(st.png ? await colorizeGrid(st.png, sim.hazard_type) : null);
   }
 
-  showStage(0, true);
+  showStage(0, true);  // also renders ranking (stage-synced) + legend
   renderSummary(sim);
-  renderRanking(sim);
   buildCascadeLayer();
   $("#badge-cascade").disabled = false;
   $("#btn-play").disabled = sim.stages.length < 2;
@@ -597,6 +693,30 @@ function hazardBounds(sim) {
   return L.latLngBounds([[f + h * e, c], [f, c + w * a]]);
 }
 
+/* Section 1: static baseline-exposure choropleth. The field is computed
+   once per server start from the DEM (low elevation + depressions + flow
+   accumulation) and cached — never recalculated per session or scenario. */
+function buildBaselineLayer(baseline) {
+  if (!baseline?.png || !baseline?.grid) return;
+  colorizeGrid(baseline.png, "baseline").then((url) => {
+    const [a, b, c, d, e, f] = baseline.grid.transform;
+    const bounds = L.latLngBounds(
+      [[f + baseline.grid.height * e, c], [f, c + baseline.grid.width * a]]);
+    S.baselineOverlay = L.imageOverlay(url, bounds, { opacity: 0.32, interactive: false });
+    if (S.showBaseline) { S.baselineOverlay.addTo(map); }
+    S.baselineOverlay.bringToBack();
+  });
+}
+
+$("#badge-baseline").onclick = () => {
+  S.showBaseline = !S.showBaseline;
+  if (S.baselineOverlay) {
+    if (S.showBaseline) S.baselineOverlay.addTo(map);
+    else map.removeLayer(S.baselineOverlay);
+  }
+  $("#badge-baseline").classList.toggle("active", S.showBaseline);
+};
+
 /* stage display ---------------------------------------------------- */
 function showStage(idx, force = false) {
   const sim = S.sim;
@@ -618,6 +738,7 @@ function showStage(idx, force = false) {
     const label = sim.stage_labels?.[idx];
     $("#scrub-label").textContent = `${idx + 1}/${sim.stages.length}${label ? ` · ${label}` : ""}`;
   }
+  renderRanking(sim, sim.stages.length > 1 ? idx : null); // panel re-sorts live
   renderLegend();
 }
 
@@ -626,6 +747,8 @@ const RAMPS = {
   flood: [[0, [8, 47, 73], 0.0], [0.25, [18, 90, 150], 0.45], [0.55, [34, 160, 220], 0.7], [0.85, [140, 215, 250], 0.9], [1, [235, 250, 255], 0.95]],
   heat: [[0, [120, 53, 15], 0.0], [0.3, [217, 119, 6], 0.4], [0.6, [234, 88, 12], 0.65], [0.85, [220, 38, 38], 0.85], [1, [254, 240, 138], 0.95]],
   cyclone: [[0, [59, 7, 100], 0.0], [0.35, [124, 58, 237], 0.4], [0.65, [219, 39, 119], 0.7], [1, [253, 224, 71], 0.9]],
+  landslide: [[0, [68, 50, 30], 0.0], [0.35, [120, 84, 40], 0.45], [0.65, [183, 121, 42], 0.7], [1, [255, 214, 102], 0.92]],
+  baseline: [[0, [22, 34, 48], 0.0], [0.45, [42, 74, 100], 0.5], [1, [110, 170, 205], 0.9]],
 };
 
 function rampColor(ramp, v) {
@@ -759,7 +882,7 @@ function renderSummary(sim) {
   const s = sim.summary;
   cards.innerHTML = `
     <div class="card warn"><div class="v">${fmt.int(s.assets_exposed)}</div><div class="k">exposed assets</div></div>
-    <div class="card bad"><div class="v">${fmt.int(s.assets_high_risk)}</div><div class="k">high risk (≥0.45)</div></div>
+    <div class="card bad"><div class="v">${fmt.int(s.assets_high_risk)}</div><div class="k">elevated + critical (risk ≥ 4)</div></div>
     <div class="card"><div class="v">${fmt.int(s.assets_high_impact)}</div><div class="k">high impact (≥0.5)</div></div>
     <div class="card"><div class="v">${fmt.pop(s.affected_population)}</div><div class="k">pop. affected</div></div>`;
 
@@ -785,21 +908,80 @@ function renderSummary(sim) {
   } else net.classList.add("hidden");
 }
 
-function renderRanking(sim) {
+/* Prioritization panel: sortable table, expandable formula breakdown.
+   The expandable content reuses hvcBreakdownHTML()/BAND_STYLE — the exact
+   same rendering the click popup uses (single source of truth).           */
+S.rankSort = { key: "risk10", dir: -1 };
+
+/* per-stage risk: H scales with the stage's exposure fraction (V, C fixed) */
+function stageRisk10(a, idx) {
+  if (!a?.hvc || idx == null || !a.stage_exposure?.length) return a?.risk10 ?? null;
+  const se = a.stage_exposure[Math.min(idx, a.stage_exposure.length - 1)] ?? 0;
+  const scale = a.exposure > 0.02 ? Math.min(1, se / a.exposure) : (se >= 0.4 ? 1 : 0);
+  const H = (a.hvc.H || 0) * scale;
+  return risk10From(H, a.hvc.V, a.hvc.C);
+}
+function risk10From(H, V, C) { return Math.min(10, (H * V * C) / 100); }
+
+function reasonLine(a) {
+  if (!a.hvc) return (S.meta.groups[a.group] || a.group);
+  const bits = [];
+  if (a.hvc.H_note) bits.push(a.hvc.H_note);
+  bits.push(a.hvc.V_class);
+  if (a.hvc.C_parts?.dependents) bits.push(`${a.hvc.C_parts.dependents} downstream`);
+  if (a.band === "cut_off" || a.status === "cut_off") bits.push("cut off");
+  return bits.join(" · ");
+}
+
+function renderRanking(sim, stageIdx = null) {
   const list = $("#rank-list");
   if (!sim) { list.innerHTML = `<div class="empty">No simulation yet.</div>`; return; }
-  const top = sim.assets.slice(0, 12);
-  list.innerHTML = "";
-  top.forEach((a, i) => {
-    const li = document.createElement("li");
-    li.className = "rank-item";
-    li.innerHTML = `
-      <span class="rk">${String(i + 1).padStart(2, "0")}</span>
-      <span class="nm">${a.name || a.asset_id}<small>${(S.meta.groups[a.group] || a.group).toLowerCase()} · risk ${fmt.score(a.risk)} · impact ${fmt.score(a.impact)}</small></span>
-      <span class="sc" style="color:${RISK_COLOR(a.risk)}">${fmt.score(a.priority)}</span>`;
-    li.onclick = () => focusAsset(a.asset_id);
-    list.appendChild(li);
+  const { key, dir } = S.rankSort;
+  const scored = sim.assets.map((a) => ({ a, r: stageRisk10(a, stageIdx) }));
+  scored.sort((x, y) => {
+    const vx = key === "name" ? (x.a.name || x.a.asset_id) : (x.r ?? x.a[key] ?? 0);
+    const vy = key === "name" ? (y.a.name || y.a.asset_id) : (y.r ?? y.a[key] ?? 0);
+    return (typeof vx === "string" ? vx.localeCompare(vy) : vx - vy) * dir;
   });
+  const top = scored.slice(0, 20);
+  const arrow = (k) => (S.rankSort.key === k ? (S.rankSort.dir < 0 ? " ▾" : " ▴") : "");
+  list.innerHTML = `
+    <li class="rank-head">
+      <span class="rk" data-sort="risk10" data-dir="-1">#${arrow("risk10")}</span>
+      <span class="nm" data-sort="name" data-dir="1">Asset${arrow("name")}</span>
+      <span class="sc" data-sort="risk10" data-dir="-1">Risk${arrow("risk10")}</span>
+    </li>`
+    + top.map(({ a, r }, i) => {
+      const band = a.band || bandOf10(r) || "safe";
+      const bs = BAND_STYLE[band] || BAND_STYLE.safe;
+      return `
+      <li class="rank-item expandable" data-id="${a.asset_id}">
+        <span class="rk">${String(i + 1).padStart(2, "0")}</span>
+        <span class="nm">${a.name || a.asset_id}<small>${reasonLine(a)}</small></span>
+        <span class="sc" style="color:${bs.color}">${r != null ? r.toFixed(1) : fmt.score(a.priority)}</span>
+        <div class="rank-detail hidden">
+          <div class="meta-row"><span>Status</span><b style="color:${bs.color}">${bs.label}</b></div>
+          ${hvcBreakdownHTML(a)}
+          ${a.action ? `<div class="action-row"><span>▸ ${a.action}</span></div>` : ""}
+          <button class="btn ghost" data-focus="${a.asset_id}">Locate on map →</button>
+        </div>
+      </li>`;
+    }).join("")
+    + (scored.length > 20 ? `<li class="empty">+ ${scored.length - 20} more — refine the scenario or sort</li>` : "");
+
+  for (const th of list.querySelectorAll("[data-sort]")) {
+    th.onclick = () => {
+      const k = th.dataset.sort;
+      if (S.rankSort.key === k) S.rankSort.dir *= -1;
+      else S.rankSort = { key: k, dir: parseInt(th.dataset.dir || "-1", 10) };
+      renderRanking(S.sim, stageIdx);
+    };
+  }
+  for (const li of list.querySelectorAll(".rank-item.expandable")) {
+    li.querySelector(".nm").onclick = () => li.querySelector(".rank-detail").classList.toggle("hidden");
+    const fb = li.querySelector("[data-focus]");
+    if (fb) fb.onclick = () => focusAsset(fb.dataset.focus);
+  }
 }
 
 function renderLegend() {
@@ -840,8 +1022,9 @@ function renderLegend() {
       flood: "linear-gradient(90deg,#122d4a,#1e5a96,#22a0dc,#ecdff5)",
       heat: "linear-gradient(90deg,#78350f,#d97706,#ea580c,#dc2626,#fef07a)",
       cyclone: "linear-gradient(90deg,#3b0764,#7c3aed,#db2777,#fde047)",
+      landslide: "linear-gradient(90deg,#44321e,#78542a,#b7792a,#ffd666)",
     }[sim.hazard_type];
-    const unit = { flood: "water depth", heat: "heat index", cyclone: "wind / surge" }[sim.hazard_type];
+    const unit = { flood: "water depth", heat: "heat index", cyclone: "wind / surge", landslide: "susceptibility" }[sim.hazard_type];
     html += `<h3>${sim.hazard_type} — ${unit}</h3>
       <div class="row"><span class="swatch" style="background:${grad}"></span><span>0 → ${stage?.meta?.max ?? 1}</span></div>
       <div class="row" style="color:var(--muted)">ring: red = failed · amber = exposed · orange = cascade</div>`;
@@ -884,8 +1067,172 @@ function focusAsset(assetId) {
   }, 700);
 }
 
-function selectAsset(assetId, lyr) {
-  openInspector(assetId);
+/* ------------------------------------------------------------------ */
+/* asset metadata popup (type / name / OSM tags) + inspector           */
+/* ------------------------------------------------------------------ */
+const META_KEYS = [
+  ["amenity", "Amenity"], ["highway", "Road class"], ["railway", "Railway"],
+  ["aeroway", "Aeroway"], ["power", "Power"], ["man_made", "Man-made"],
+  ["bridge", "Bridge"], ["tunnel", "Tunnel"], ["capacity", "Capacity"],
+  ["beds", "Beds"], ["operator", "Operator"], ["opening_hours", "Hours"],
+  ["phone", "Phone"], ["website", "Website"], ["addr:full", "Address"],
+  ["addr:street", "Street"], ["addr:suburb", "Suburb"], ["building:levels", "Floors"],
+];
+
+function assetDisplayName(assetId) {
+  const f = S.featureIndex.get(assetId);
+  const tags = safeTags(f?.properties?.tags);
+  if (f?.properties?.name) return f.properties.name;
+  if (tags.name) return tags.name;
+  const a = S.assetState.get(assetId);
+  return a?.name || assetId;
+}
+
+function openMetaPopup(assetId, latlng) {
+  closeMetaPopup();
+  const f = S.featureIndex.get(assetId);
+  const a = S.assetState.get(assetId);
+  const tags = safeTags(f?.properties?.tags);
+
+  const symRow = f ? (() => {
+    const kind = pointKind(
+      Object.keys(S.layers).find((g) => S.layers[g]?.features?.some((x) => featureId(x) === assetId)) || "",
+      tags,
+    );
+    const s = kind ? SYMBOLS[kind] : null;
+    return s ? `<svg viewBox="0 0 24 24" width="20" height="20" style="vertical-align:-4px;margin-right:6px">${s.shape}</svg>` : "";
+  })() : "";
+
+  const groups = S.meta?.groups || {};
+  const typeLabel = a
+    ? (groups[a.group] || a.group) + " · " + (a.category || "")
+    : (groups[f?.properties?.group_name] || f?.properties?.group_name || "Infrastructure")
+      + " · " + (f?.properties?.category || "");
+
+  const rows = META_KEYS
+    .filter(([k]) => tags[k] !== undefined && tags[k] !== "" && tags[k] !== "yes")
+    .map(([k, label]) => `<div class="meta-row"><span>${label}</span><b>${String(tags[k]).slice(0, 60)}</b></div>`)
+    .join("");
+  const extra = Object.keys(tags).filter((k) => !META_KEYS.some(([mk]) => mk === k)
+    && !["name", "id"].includes(k)).slice(0, 8);
+  const extraRows = extra.map((k) => `<div class="meta-row"><span>${k}</span><b>${String(tags[k]).slice(0, 40)}</b></div>`).join("");
+
+  // status badge + score band (Safe/Elevated/Critical/Cut Off)
+  const band = a?.status || bandOf10(a?.risk10);
+  const bs = BAND_STYLE[band] || BAND_STYLE.safe;
+  const badge = a ? `<span class="band-badge" style="background:${bs.color}">${bs.label}</span>` : "";
+
+  // score display: 0..10 H x V x C when simulated, legacy 0..1 otherwise
+  const scoreRow = a ? (a.risk10 != null
+    ? `<div class="score-hero" style="border-color:${bs.color}">
+         <span class="score-num" style="color:${bs.color}">${(a.risk10 ?? 0).toFixed(1)}</span>
+         <span class="score-sub">/ 10 risk</span>
+         ${hvcBreakdownHTML(a)}
+       </div>`
+    : `<div class="meta-row sim"><span>Risk</span><b>${fmt.score(a.risk)}</b></div>
+       <div class="meta-row sim"><span>Impact</span><b>${fmt.score(a.impact)}</b></div>
+       <div class="meta-row sim"><span>Priority</span><b>${fmt.score(a.priority)}</b></div>`)
+    : "";
+
+  const actionRow = a?.action ? `<div class="action-row"><span>▸ ${a.action}</span></div>` : "";
+  const ttiRow = timeToImpactHTML(a);
+
+  const html = `
+    <div class="popup-head">${symRow}<div>
+      <div class="popup-title">${assetDisplayName(assetId)}</div>
+      <div class="popup-type">${typeLabel} ${badge}</div>
+    </div></div>
+    ${scoreRow}
+    ${ttiRow}
+    ${actionRow}
+    <div class="cascade-box" id="cascade-box-${CSS.escape(assetId)}"><div class="empty">checking cascading effects…</div></div>
+    ${rows || extraRows ? `<div class="meta-table">${rows}${extraRows}</div>` : `<div class="empty">No metadata tags.</div>`}
+    <button class="btn ghost popup-more" onclick="window.__inspect('${assetId}')">Full risk details →</button>`;
+
+  S.metaPopup = L.popup({ closeButton: true, autoPan: false, maxWidth: 300, className: "meta-popup" })
+    .setLatLng(latlng)
+    .setContent(html)
+    .openOn(map);
+
+  fillCascadeBox(assetId);
+}
+
+/* 1-hop downstream assets via the real dependency graph (async fill) */
+async function fillCascadeBox(assetId) {
+  const el0 = document.getElementById("cascade-box-" + CSS.escape(assetId));
+  if (!el0) return;
+  try {
+    const deps = await fetch(`/api/dependencies/${encodeURIComponent(assetId)}`).then((r) => r.json());
+    const box = document.getElementById("cascade-box-" + CSS.escape(assetId)); // popup may have closed
+    if (!box) return;
+    const dependents = (deps.dependents || []).slice(0, 3);
+    const total = (deps.dependents || []).length;
+    if (!total) { box.innerHTML = `<div class="meta-row"><span>Cascading effects</span><b>none mapped</b></div>`; return; }
+    const items = dependents.map((d) =>
+      `<div class="dep-item" data-asset="${d.id}"><span>${d.name || d.id}</span><span class="t">${d.dep_type || "depends"}</span></div>`).join("");
+    const more = total > 3 ? `<div class="empty">+${total - 3} more dependents (full details)</div>` : "";
+    box.innerHTML = `<div class="cascade-head">Cascading effects if this fails (${total})</div>${items}${more}`;
+    for (const el of box.querySelectorAll(".dep-item")) {
+      el.onclick = () => {
+        const c = S.coordIndex[el.dataset.asset];
+        closeMetaPopup();
+        if (c) {
+          map.flyTo(c, Math.max(map.getZoom(), 15), { duration: 0.5 });
+          setTimeout(() => selectAsset(el.dataset.asset, null, L.latLng(c[0], c[1])), 550);
+        }
+      };
+    }
+  } catch { /* 404: asset not in dep graph */
+    const box = document.getElementById("cascade-box-" + CSS.escape(assetId));
+    if (box) box.innerHTML = `<div class="meta-row"><span>Cascading effects</span><b>none mapped</b></div>`;
+  }
+}
+
+function closeMetaPopup() {
+  if (S.metaPopup) { map.closePopup(S.metaPopup); S.metaPopup = null; }
+}
+
+/* exposed for the popup's inline button */
+window.__inspect = (assetId) => { closeMetaPopup(); openInspector(assetId); };
+
+/* status band -> color/badge (Section 3 thresholds, used everywhere) */
+const BAND_STYLE = {
+  safe:     { color: "#34d399", label: "Safe" },
+  elevated: { color: "#fbbf24", label: "Elevated" },
+  critical: { color: "#ef4444", label: "Critical" },
+  cut_off:  { color: "#ef4444", label: "Cut Off" },
+};
+function bandOf10(risk10) {
+  if (risk10 == null) return null;
+  return risk10 < 4 ? "safe" : risk10 < 7 ? "elevated" : "critical";
+}
+
+function hvcBreakdownHTML(a) {
+  if (!a?.hvc?.formula) return "";
+  return `<div class="formula-box">
+    <div class="formula-line">${a.hvc.formula}</div>
+    <div class="formula-parts">
+      H ${a.hvc.H} · V ${a.hvc.V} (${a.hvc.V_class}) · C ${a.hvc.C}
+      (pop ${a.hvc.C_parts?.pop ?? 0}, redundancy −${a.hvc.C_parts?.redundancy_loss ?? 0}, ${a.hvc.C_parts?.dependents ?? 0} downstream)
+    </div>
+  </div>`;
+}
+
+function timeToImpactHTML(a) {
+  if (!a || a.exposure > 0.05 || !a.stage_exposure?.length || S.sim?.stages.length < 2) return "";
+  const hit = a.stage_exposure.findIndex((se) => se >= 0.05);
+  if (hit < 0) return "";
+  const label = S.sim.stage_labels?.[hit] || `stage ${hit + 1}`;
+  return `<div class="meta-row"><span>Time to impact</span><b>~${label}</b></div>`;
+}
+
+function selectAsset(assetId, lyr, latlng) {
+  const coord = latlng
+    || (lyr?.getLatLng ? lyr.getLatLng() : null)
+    || (lyr?.getBounds ? lyr.getBounds().getCenter() : null)
+    || (S.coordIndex[assetId] ? L.latLng(S.coordIndex[assetId][0], S.coordIndex[assetId][1]) : null);
+  if (coord) openMetaPopup(assetId, coord);
+  else openInspector(assetId);
 }
 
 async function openInspector(assetId) {

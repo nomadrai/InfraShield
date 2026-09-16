@@ -5,6 +5,7 @@ from infrashield.geo.processing import (
     build_processing_summary,
     clean_geometries,
     clip_to_study_area,
+    filter_category,
     layer_summary,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "build_processing_summary",
     "clean_geometries",
     "clip_to_study_area",
+    "filter_category",
     "layer_summary",
 ]

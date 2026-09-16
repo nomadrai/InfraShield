@@ -130,6 +130,27 @@ Exposure = max(wind, surge) with wind de-rated 60% for roads/transport.
 Assumptions: no forward motion/asymmetry, no rainfall coupling, no waves,
 static landfall location (user-clickable on the map).
 
+## 5b. Landslide model
+
+Deterministic susceptibility index on the DEM grid (no spreading; single
+"peak saturation" stage, like heat):
+
+* **Slope control**: `slope` (from the filled DEM) converts to degrees;
+  susceptibility is 0 below a configurable threshold (default 15°) and
+  rises linearly to 1 at the critical angle (default 35°). The infinite-
+  slope stability picture, not a mechanistic model.
+* **Rainfall / soil-moisture proxy**: with no pore-pressure data, the
+  triggering stress is proxied by scenario rainfall — factor 0.5 (dry,
+  0 mm) to 1.0 (fully saturating, ≥ 600 mm/24 h) multiplies the slope term.
+  This is the standard rainfall-threshold simplification.
+* **Exposure**: susceptibility sampled at the asset (mean over its
+  vertices); facility groups de-rated 40% (they fail on access/backup, not
+  burial). H = 10 × susceptibility.
+
+Assumptions: no soil/rock type, no vegetation cover, no lithology, no
+history of instability, no runout modelling (what is flagged is the
+*source* zone; debris travel distance is not simulated).
+
 ## 6. Vulnerability, criticality, population
 
 - Class tables in `risk/criticality.py` derive criticality/vulnerability from
